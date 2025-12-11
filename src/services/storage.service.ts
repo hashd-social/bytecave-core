@@ -9,7 +9,6 @@ import path from 'path';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { BlobMetadata, BlobNotFoundError, StorageFullError } from '../types/index.js';
-import { generateCID, bufferToBase64 } from '../utils/cid.js';
 
 export class StorageService {
   private blobsDir: string;
@@ -245,6 +244,46 @@ export class StorageService {
       logger.error('Failed to list blobs', error);
       return [];
     }
+  }
+
+  /**
+   * Pin a blob (R9.3, R9.6)
+   * Makes blob permanent and immune to GC
+   */
+  async pinBlob(cid: string): Promise<void> {
+    await this.ensureInitialized();
+
+    const metadata = await this.getMetadata(cid);
+    metadata.pinned = true;
+    
+    await this.updateMetadata(cid, { pinned: true });
+
+    logger.info('Blob pinned', { cid });
+  }
+
+  /**
+   * Unpin a blob (R9.3, R9.6)
+   * Makes blob eligible for GC again
+   */
+  async unpinBlob(cid: string): Promise<void> {
+    await this.ensureInitialized();
+
+    const metadata = await this.getMetadata(cid);
+    metadata.pinned = false;
+    
+    await this.updateMetadata(cid, { pinned: false });
+
+    logger.info('Blob unpinned', { cid });
+  }
+
+  /**
+   * List all pinned blobs (R9.7)
+   */
+  async listPinnedBlobs(): Promise<BlobMetadata[]> {
+    await this.ensureInitialized();
+
+    const allBlobs = await this.listBlobs();
+    return allBlobs.filter(blob => blob.pinned === true);
   }
 
   /**

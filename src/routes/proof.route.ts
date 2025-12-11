@@ -6,6 +6,7 @@
 import { Request, Response } from 'express';
 import { proofService } from '../services/proof.service.js';
 import { storageService } from '../services/storage.service.js';
+import { reputationService } from '../services/reputation.service.js';
 import { logger } from '../utils/logger.js';
 import { config } from '../config/index.js';
 import { ProofGenerateRequest, ProofGenerateResponse } from '../types/index.js';
@@ -54,6 +55,9 @@ export async function proofGenerateHandler(req: Request, res: Response): Promise
     // Generate proof
     const proof = await proofService.generateProof(cid, challenge);
 
+    // Record successful proof generation (R5.9)
+    await reputationService.applyReward(config.nodeId, 'proof-success', cid);
+
     const response: ProofGenerateResponse = {
       nodeId: config.nodeId,
       proof: proof.signature,
@@ -74,6 +78,9 @@ export async function proofGenerateHandler(req: Request, res: Response): Promise
     });
   } catch (error: any) {
     const latency = Date.now() - startTime;
+
+    // Record proof failure (R5.9)
+    await reputationService.applyPenalty(config.nodeId, 'proof-failure', req.body.cid);
 
     logger.error('Proof generation failed', error);
 

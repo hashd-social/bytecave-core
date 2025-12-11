@@ -10,7 +10,7 @@ export function errorHandler(
   error: Error | VaultError,
   req: Request,
   res: Response,
-  next: NextFunction
+  _next: NextFunction
 ): void {
   logger.error('Request error', error, {
     method: req.method,

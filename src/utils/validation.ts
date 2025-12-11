@@ -22,10 +22,7 @@ export function validateStoreRequest(body: any): void {
     throw new InvalidRequestError('mimeType is required and must be a string');
   }
 
-  // For MVP, only support application/json
-  if (body.mimeType !== 'application/json') {
-    throw new InvalidRequestError('Only application/json mimeType is supported');
-  }
+  // Accept any mimeType - vault stores encrypted blobs agnostically
 
   // Check size limit
   const sizeBytes = Buffer.from(body.ciphertext, 'base64').length;

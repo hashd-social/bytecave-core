@@ -183,7 +183,7 @@ export class BanlistService {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const remoteBanlist: Banlist = await response.json();
+      const remoteBanlist = await response.json() as Banlist;
 
       // Merge with local banlist
       if (this.banlist) {

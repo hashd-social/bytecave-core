@@ -4,7 +4,7 @@
 
 import { config } from '../config/index.js';
 
-type LogLevel = 'debug' | 'info' | 'warn' | 'error.js';
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const LOG_LEVELS: Record<LogLevel, number> = {
   debug: 0,

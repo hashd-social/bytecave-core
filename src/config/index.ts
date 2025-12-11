@@ -47,10 +47,29 @@ function getEnvArray(key: string, defaultValue: string[] = []): string[] {
 }
 
 export const config: Config = {
-  nodeEnv: getEnv('NODE_ENV', 'development'),
-  nodeId: getEnv('NODE_ID', `vault-${Date.now()}`),
-  port: getEnvNumber('PORT', 3002),
-  nodeUrl: getEnv('NODE_URL', 'http://localhost:3002'),
+  // Node identification
+  nodeEnv: process.env.NODE_ENV || 'development',
+  nodeId: process.env.NODE_ID || 'vault-node-1',
+  port: parseInt(process.env.PORT || '3004'),
+  nodeUrl: process.env.NODE_URL || 'http://hashd.local:3004',
+
+  // Sharding configuration (Requirement 7)
+  shardCount: parseInt(process.env.SHARD_COUNT || '1024'),
+  nodeShards: process.env.NODE_SHARDS 
+    ? JSON.parse(process.env.NODE_SHARDS)
+    : [0, 1023], // Default: responsible for all shards (single-node mode)
+
+  // Garbage collection configuration (Requirement 8)
+  gcEnabled: getEnvBoolean('GC_ENABLED', true),
+  gcRetentionMode: (process.env.GC_RETENTION_MODE || 'hybrid') as 'size' | 'time' | 'hybrid',
+  gcMaxStorageMB: getEnvNumber('GC_MAX_STORAGE_MB', 5000),
+  gcMaxBlobAgeDays: getEnvNumber('GC_MAX_BLOB_AGE_DAYS', 30),
+  gcMinFreeDiskMB: getEnvNumber('GC_MIN_FREE_DISK_MB', 1000),
+  gcReservedForPinnedMB: getEnvNumber('GC_RESERVED_FOR_PINNED_MB', 1000),
+  gcIntervalMinutes: getEnvNumber('GC_INTERVAL_MINUTES', 10),
+  gcVerifyReplicas: getEnvBoolean('GC_VERIFY_REPLICAS', false),
+  gcVerifyProofs: getEnvBoolean('GC_VERIFY_PROOFS', false),
+
   dataDir: getEnv('DATA_DIR', './data'),
   maxBlobSizeMB: getEnvNumber('MAX_BLOB_SIZE_MB', 10),
   maxStorageGB: getEnvNumber('MAX_STORAGE_GB', 100),

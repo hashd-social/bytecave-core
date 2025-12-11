@@ -8,6 +8,7 @@ export interface BlobMetadata {
   mimeType: string;
   createdAt: number;
   version: number; // Schema version, starting at 1
+  pinned?: boolean; // Never delete if true (Requirement 9)
   replication?: {
     fromPeer?: string;
     replicatedAt?: number;
@@ -98,6 +99,17 @@ export interface Config {
   nodeId: string;
   port: number;
   nodeUrl: string;
+  shardCount: number;
+  nodeShards: number[] | ShardRange[];
+  gcEnabled: boolean;
+  gcRetentionMode: RetentionMode;
+  gcMaxStorageMB: number;
+  gcMaxBlobAgeDays: number;
+  gcMinFreeDiskMB: number;
+  gcReservedForPinnedMB: number;
+  gcIntervalMinutes: number;
+  gcVerifyReplicas: boolean;
+  gcVerifyProofs: boolean;
   dataDir: string;
   maxBlobSizeMB: number;
   maxStorageGB: number;
@@ -214,6 +226,476 @@ export interface NodeReputationData {
   events: ReputationEvent[];
   firstSeen: number;
   lastSeen: number;
+}
+
+// ============================================
+// REPLICATION FACTOR (Requirement 6)
+// ============================================
+
+export interface ReplicationTarget {
+  nodeId: string;
+  url: string;
+  publicKey?: string;
+  score?: number;
+}
+
+export interface ReplicationState {
+  cid: string;
+  replicationFactor: number;
+  targetNodes: string[];        // Node IDs that should store this blob
+  confirmedNodes: string[];     // Nodes that confirmed storage
+  failedNodes: string[];        // Nodes that failed to store
+  lastUpdated: number;
+  complete: boolean;
+}
+
+export interface ReplicationStatus {
+  cid: string;
+  expectedReplicas: number;
+  actualReplicas: number;
+  nodes: Array<{
+    nodeId: string;
+    url: string;
+    status: 'confirmed' | 'pending' | 'failed';
+    lastProof?: number;
+  }>;
+  complete: boolean;
+}
+
+export interface NodeSelectionResult {
+  selected: ReplicationTarget[];
+  excluded: Array<{ nodeId: string; reason: string }>;
+}
+
+// ============================================
+// STORAGE SHARDING (Requirement 7)
+// ============================================
+
+export interface ShardRange {
+  start: number;
+  end: number;
+}
+
+export interface NodeShardInfo {
+  nodeId: string;
+  shards: number[] | ShardRange[];  // Explicit list or ranges
+  shardCount: number;                // Total shards in network
+}
+
+export interface ShardAssignment {
+  shardKey: number;
+  eligibleNodes: string[];
+  shardCount: number;
+}
+
+// ============================================
+// GARBAGE COLLECTION (Requirement 8)
+// ============================================
+
+export type RetentionMode = 'size' | 'time' | 'hybrid';
+
+export interface GCConfig {
+  enabled: boolean;
+  retentionMode: RetentionMode;
+  maxStorageMB: number;
+  maxBlobAgeDays: number;
+  minFreeDiskMB: number;
+  reservedForPinnedMB: number;
+  gcIntervalMinutes: number;
+}
+
+
+export interface GCCandidate {
+  cid: string;
+  size: number;
+  age: number;
+  lastAccessed: number;
+  pinned: boolean;
+  priority: number;
+}
+
+/**
+ * Requirement 10: Encrypted Multi-Writer Feeds
+ */
+
+// Feed types (R10.1)
+export type FeedType = 'dm' | 'post' | 'listing' | 'activity';
+
+// Feed event types (R10.2)
+export type FeedEventType = 'message' | 'comment' | 'post' | 'edit' | 'reaction' | 'delete';
+
+// Feed entry metadata (R10.2)
+export interface FeedEvent {
+  feedId: string;
+  cid: string;
+  parentCid: string | null; // null for root entries
+  authorKey: string;
+  timestamp: number;
+  signature: string; // Ed25519 signature over feedId, cid, parentCid, timestamp, authorKey
+  eventType?: FeedEventType; // Optional hint for clients
+}
+
+// Encrypted payload structure (R10.2)
+export interface FeedPayload {
+  type: FeedEventType;
+  content: string;
+  attachments?: string[]; // Array of CIDs
+  metadata?: Record<string, any>; // Optional metadata
+}
+
+// Feed metadata
+export interface FeedMetadata {
+  feedId: string;
+  feedType: FeedType;
+  rootCid: string | null; // First entry CID
+  writers: string[]; // Authorized writer public keys
+  createdAt: number;
+  lastUpdatedAt: number;
+  entryCount: number;
+}
+
+// Feed entry with full data
+export interface FeedEntryWithBlob {
+  event: FeedEvent;
+  ciphertext: Buffer;
+}
+
+// Feed discovery response (R10.8)
+export interface FeedDiscoveryResponse {
+  feedId: string;
+  metadata: FeedMetadata;
+  events: FeedEvent[];
+  cursor?: string;
+  hasMore: boolean;
+}
+
+// Feed validation result (R10.6)
+export interface FeedValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+// Fork resolution result (R10.7)
+export interface ForkResolutionResult {
+  winningChain: FeedEvent[];
+  discardedChains: FeedEvent[][];
+  reason: string;
+}
+
+/**
+ * Requirement 11: Node Discovery & Selection Protocol
+ */
+
+// Node registry data (R11.1a)
+export interface NodeRegistryEntry {
+  nodeId: string;
+  publicKey: string;
+  endpoint: string;
+  metadataHash: string;
+  active: boolean;
+  registeredAt: number;
+}
+
+// Node self-reported metadata (R11.1b)
+export interface NodeMetadata {
+  nodeId: string;
+  version: string;
+  features: string[];
+  storageCapacity: number;
+  storageUsed: number;
+  loadFactor: number; // 0-1
+  shardParticipation: number[]; // Array of shard IDs
+  localScore: number;
+  uptime: number;
+  timestamp: number;
+}
+
+// Cached node observations (R11.1c)
+export interface NodeObservations {
+  nodeId: string;
+  successRate: number; // 0-1
+  avgLatency: number; // milliseconds
+  replicationSuccess: number; // 0-1
+  proofFreshness: number; // timestamp of last valid proof
+  rateLimited: boolean;
+  lastSeen: number;
+  requestCount: number;
+  failureCount: number;
+  cachedAt: number;
+}
+
+// Node score components (R11.2)
+export interface NodeScore {
+  nodeId: string;
+  totalScore: number; // 0-100
+  proofFreshnessScore: number; // 40%
+  responseLatencyScore: number; // 20%
+  reliabilityScore: number; // 20%
+  capacityScore: number; // 10%
+  shardRelevanceScore: number; // 10%
+  lastUpdated: number;
+}
+
+// Node misbehavior tracking (R11.6)
+export interface NodeMisbehavior {
+  nodeId: string;
+  invalidProofCount: number;
+  cidMismatchCount: number;
+  corruptBlobCount: number;
+  timeoutCount: number;
+  lastMisbehavior: number;
+  banUntil: number | null; // null if not banned
+  permanentBan: boolean;
+}
+
+// Upload result (R11.3)
+export interface UploadResult {
+  cid: string;
+  successfulNodes: string[];
+  failedNodes: string[];
+  success: boolean;
+  warnings: string[];
+}
+
+// Download result (R11.4)
+export interface DownloadResult {
+  cid: string;
+  ciphertext: Buffer;
+  sourceNode: string;
+  latency: number;
+  verified: boolean;
+}
+
+// Feed sync result (R11.5)
+export interface FeedSyncResult {
+  feedId: string;
+  events: FeedEvent[];
+  sourceNodes: string[];
+  missingBlobs: string[];
+  errors: string[];
+}
+
+/**
+ * Requirement 12: Writer Authorization
+ */
+
+// Writer authorization context (R12.1)
+export interface WriterContext {
+  writerPubKey: string;        // P-256 public key
+  walletAddress: string;       // Associated wallet
+  mailboxId: string;           // Deterministic mailbox ID
+}
+
+// Guild tier types (R12.4)
+export type GuildTier = 'public' | 'members' | 'token_gated' | 'prime_key';
+
+// Guild posting rules (R12.4)
+export interface GuildPostingRules {
+  tier: GuildTier;
+  memberList?: string[];       // For 'members' tier
+  tokenAddress?: string;       // For 'token_gated' tier
+  minBalance?: string;         // For 'token_gated' tier
+  primeKeyHolders?: string[];  // For 'prime_key' tier
+}
+
+// Authorization check result (R12.7)
+export interface AuthorizationResult {
+  authorized: boolean;
+  reason?: string;
+  rejectionType?: 'signature' | 'blocklist' | 'tier' | 'chain' | 'timestamp';
+}
+
+// Message state (R12.2)
+export type MessageState = 'valid' | 'missing' | 'invalid' | 'censored';
+
+// Validated feed event (R12.6)
+export interface ValidatedFeedEvent extends FeedEvent {
+  state: MessageState;
+  validationErrors: string[];
+  writerContext?: WriterContext;
+}
+
+/**
+ * Requirement 13: Vault Node Reputation System (extends Requirement 4/5)
+ */
+
+// Reputation class (R13.4)
+export type ReputationClass = 'gold' | 'silver' | 'bronze' | 'blacklisted';
+
+// Local node reputation (R13.1, R13.3) - extends existing
+export interface LocalNodeReputation extends NodeReputationData {
+  class: ReputationClass;
+  decayedScore: number;
+}
+
+// Global reputation entry (R13.8)
+export interface GlobalReputationEntry {
+  nodeId: string;
+  score: number;
+  lastVerified: number;
+  flags: string[];
+}
+
+// Global reputation manifest (R13.8)
+export interface GlobalReputationManifest {
+  version: string;
+  timestamp: number;
+  entries: GlobalReputationEntry[];
+  signature: string;
+}
+
+// Node health check result (R13.6)
+export interface NodeHealthCheck {
+  nodeId: string;
+  online: boolean;
+  latency: number;
+  proofCapable: boolean;
+  blobIntegrity: boolean;
+  timestamp: number;
+}
+
+// Reputation export (R13.10)
+export interface ReputationExport {
+  version: string;
+  exportedAt: number;
+  reputations: LocalNodeReputation[];
+  encrypted: boolean;
+}
+
+/**
+ * Requirement 14: Lightweight Consensus & Anti-Censorship
+ */
+
+// Consensus scope (R14.1)
+export type ConsensusType = 'availability' | 'integrity' | 'replica_agreement';
+
+// Blob permanence level (R14.9)
+export type BlobPermanence = 'ephemeral' | 'persistent' | 'archival';
+
+// Replica fetch result (R14.2, R14.3)
+export interface ReplicaFetchResult {
+  nodeId: string;
+  cid: string;
+  ciphertext: Buffer | null;
+  hash: string | null;
+  latency: number;
+  success: boolean;
+  error?: string;
+}
+
+// Consensus result (R14.3)
+export interface ConsensusResult {
+  cid: string;
+  consensus: boolean;
+  matchingReplicas: number;
+  totalReplicas: number;
+  acceptedHash: string | null;
+  ciphertext: Buffer | null;
+  disputedNodes: string[];
+  censoringNodes: string[];
+}
+
+// Dispute record (R14.6)
+export interface DisputeRecord {
+  cid: string;
+  timestamp: number;
+  conflictingHashes: Map<string, string[]>; // hash -> nodeIds
+  resolution: 'pending' | 'resolved' | 'unresolvable';
+}
+
+// Censorship detection (R14.4, R14.10)
+export interface CensorshipEvent {
+  cid: string;
+  nodeId: string;
+  timestamp: number;
+  type: 'refusal' | 'timeout' | 'invalid_response';
+  context: string;
+}
+
+// Audit log entry (R14.10)
+export interface AuditLogEntry {
+  timestamp: number;
+  type: 'node_failure' | 'dispute' | 'censorship_suspicion' | 'consensus_failure';
+  cid?: string;
+  nodeId?: string;
+  details: Record<string, any>;
+}
+
+// Blob metadata with permanence (R14.9)
+export interface BlobMetadataWithPermanence extends BlobMetadata {
+  permanence: BlobPermanence;
+  replicationTarget: number;
+  archivalNodes?: string[];
+}
+
+/**
+ * Requirement 15: Blob Indexing & Query Layer
+ */
+
+// Blob type for indexing (R15.2)
+export type IndexableBlobType = 'message' | 'post' | 'comment' | 'attachment';
+
+// Standardized blob metadata tags (R15.2)
+export interface IndexableBlobMetadata {
+  type: IndexableBlobType;
+  threadId: string;        // keccak256(publicThreadIdentifier) - privacy-preserving
+  guildId?: string;        // Optional guild contract ID
+  parentCid?: string;      // Reference to parent blob
+  timestamp: number;
+  size: number;
+  mediaType?: string;      // MIME type
+}
+
+// Index entry (R15.1)
+export interface IndexEntry {
+  cid: string;
+  type: IndexableBlobType;
+  timestamp: number;
+  threadId: string;
+  guildId?: string;
+  parentCid?: string;
+  size: number;
+  mediaType?: string;
+  indexed: number;         // When it was indexed
+}
+
+// Index query result (R15.3)
+export interface IndexQueryResult {
+  entries: IndexEntry[];
+  cursor?: string;         // For pagination
+  hasMore: boolean;
+  total?: number;
+}
+
+// Delta sync result (R15.4)
+export interface DeltaSyncResult {
+  newEntries: IndexEntry[];
+  sinceTimestamp: number;
+  currentTimestamp: number;
+  count: number;
+}
+
+export interface GCResult {
+  checked: number;
+  deleted: number;
+  skippedPinned: number;
+  skippedInsufficientReplicas: number;
+  skippedShardMismatch: number;
+  freedBytes: number;
+  deletedCids: string[];
+}
+
+export interface GCStatus {
+  enabled: boolean;
+  retentionMode: RetentionMode;
+  maxStorageMB: number;
+  usedStorageMB: number;
+  lastRun: number;
+  deletedCount: number;
+  skippedPinned: number;
+  skippedInsufficientReplicas: number;
+  nextRun: number;
 }
 
 export class VaultError extends Error {

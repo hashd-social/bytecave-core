@@ -13,7 +13,6 @@ import { Peer, PeerConfig, ReplicateRequest } from '../types/index.js';
 export class ReplicationService {
   private peers: Peer[] = [];
   private peersPath: string;
-  private lastLoad: number = 0;
 
   constructor() {
     this.peersPath = path.join(process.cwd(), 'config', 'peers.json');
@@ -116,7 +115,7 @@ export class ReplicationService {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      const result = await response.json();
+      const result = await response.json() as { alreadyStored?: boolean };
       const latency = Date.now() - startTime;
 
       logger.debug('Replication successful', {
@@ -190,7 +189,6 @@ export class ReplicationService {
       const peerConfig: PeerConfig = JSON.parse(content);
 
       this.peers = peerConfig.peers || [];
-      this.lastLoad = Date.now();
 
       logger.info('Peers loaded', {
         total: this.peers.length,

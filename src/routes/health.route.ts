@@ -12,7 +12,7 @@ import { HealthResponse } from '../types/index.js';
 
 const VERSION = '1.0.0';
 
-export async function healthHandler(req: Request, res: Response): Promise<void> {
+export async function healthHandler(_req: Request, res: Response): Promise<void> {
   try {
     const stats = await storageService.getStats();
     const metrics = metricsService.getMetrics();
