@@ -28,6 +28,11 @@ describe('HTTP Integration Tests', () => {
     await storageService.initialize();
   });
 
+  afterAll(async () => {
+    // Give time for any pending operations to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+  });
+
   describe('POST /store', () => {
     it('should store a blob with application/json mimeType', async () => {
       const response = await request(app)
@@ -192,7 +197,8 @@ describe('HTTP Integration Tests', () => {
       expect(response.body).toHaveProperty('cid', testCid);
       expect(response.body).toHaveProperty('ciphertext');
       expect(response.body).toHaveProperty('mimeType');
-      expect(response.body).toHaveProperty('metadata');
+      expect(response.body).toHaveProperty('size');
+      expect(response.body).toHaveProperty('createdAt');
     });
 
     it('should return 404 for non-existent blob', async () => {
@@ -229,8 +235,10 @@ describe('HTTP Integration Tests', () => {
 
       expect(response.status).toBe(200);
       expect(response.body).toHaveProperty('status', 'healthy');
-      expect(response.body).toHaveProperty('timestamp');
+      expect(response.body).toHaveProperty('version');
       expect(response.body).toHaveProperty('uptime');
+      expect(response.body).toHaveProperty('storedBlobs');
+      expect(response.body).toHaveProperty('totalSize');
     });
   });
 
