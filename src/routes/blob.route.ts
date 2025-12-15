@@ -9,7 +9,7 @@ import { banlistService } from '../services/banlist.service.js';
 import { metricsService } from '../services/metrics.service.js';
 import { logger } from '../utils/logger.js';
 import { validateCIDParam } from '../utils/validation.js';
-import { bufferToBase64 } from '../utils/cid.js';
+import { bufferToBase64, verifyCID } from '../utils/cid.js';
 import { BlobResponse, BlobBannedError } from '../types/index.js';
 
 export async function blobHandler(req: Request, res: Response): Promise<void> {
@@ -31,6 +31,18 @@ export async function blobHandler(req: Request, res: Response): Promise<void> {
 
     // Retrieve blob
     const { ciphertext, metadata } = await storageService.getBlob(cid);
+
+    // SECURITY: Verify CID matches stored content (prevents tampering)
+    if (!verifyCID(cid, ciphertext)) {
+      logger.error('SECURITY: CID verification failed - possible tampering detected', { cid });
+      res.status(500).json({
+        error: 'INTEGRITY_CHECK_FAILED',
+        message: 'Stored data does not match CID - possible tampering detected',
+        cid,
+        timestamp: Date.now()
+      });
+      return;
+    }
 
     const response: BlobResponse = {
       cid,

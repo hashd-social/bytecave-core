@@ -77,8 +77,6 @@ export async function proofGenerateHandler(req: Request, res: Response): Promise
       latency
     });
   } catch (error: any) {
-    const latency = Date.now() - startTime;
-
     // Record proof failure (R5.9)
     await reputationService.applyPenalty(config.nodeId, 'proof-failure', req.body.cid);
 

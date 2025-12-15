@@ -63,9 +63,6 @@ export class ContractIntegrationService {
   private nodeRegistry: ethers.Contract | null = null;
   private incentives: ethers.Contract | null = null;
 
-  private registryAddress: string | null = null;
-  private incentivesAddress: string | null = null;
-
   /**
    * Initialize contract integration
    */
@@ -85,7 +82,6 @@ export class ContractIntegrationService {
       }
 
       // Initialize node registry contract
-      this.registryAddress = config.registryAddress;
       this.nodeRegistry = new ethers.Contract(
         config.registryAddress,
         NODE_REGISTRY_ABI,
@@ -94,7 +90,6 @@ export class ContractIntegrationService {
 
       // Initialize incentives contract if provided
       if (config.incentivesAddress) {
-        this.incentivesAddress = config.incentivesAddress;
         this.incentives = new ethers.Contract(
           config.incentivesAddress,
           INCENTIVES_ABI,

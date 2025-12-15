@@ -14,8 +14,9 @@ import fs from 'fs/promises';
 import path from 'path';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
+import { generateReplicationStateHash, verifyReplicationStateIntegrity } from '../utils/cid.js';
 import { reputationService } from './reputation.service.js';
-import { selectNodesForReplication, selectReplacementNodes, isReplicationComplete } from '../utils/node-selection.js';
+import { selectNodesForReplication, isReplicationComplete } from '../utils/node-selection.js';
 import { 
   ReplicationTarget, 
   ReplicationState, 
@@ -319,7 +320,102 @@ export class ReplicationManagerService {
   }
 
   /**
+   * Verify replication by actually checking with peer nodes
+   * SECURITY: Never trust local state alone - verify with network
+   * @returns Number of peers that actually have the blob
+   */
+  async verifyReplicationWithPeers(cid: string, peerUrls: string[]): Promise<number> {
+    let confirmedCount = 0;
+    
+    for (const peerUrl of peerUrls) {
+      try {
+        // Ask peer if they have the blob
+        const response = await fetch(`${peerUrl}/blob/${cid}`, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(5000)
+        });
+        
+        if (response.ok) {
+          confirmedCount++;
+        }
+      } catch {
+        // Peer unreachable or doesn't have blob
+      }
+    }
+    
+    // Update last verified timestamp
+    const state = this.states.get(cid);
+    if (state) {
+      state.lastVerified = Date.now();
+      // Update confirmed count based on actual verification
+      if (confirmedCount !== state.confirmedNodes.length) {
+        logger.warn('Replication count mismatch detected', {
+          cid,
+          claimed: state.confirmedNodes.length,
+          actual: confirmedCount
+        });
+      }
+    }
+    
+    return confirmedCount;
+  }
+
+  /**
+   * Check if blob is safe to delete (has enough replicas)
+   * SECURITY: Verifies with network, doesn't trust local state
+   */
+  async isSafeToDelete(cid: string, peerUrls: string[]): Promise<boolean> {
+    const actualReplicas = await this.verifyReplicationWithPeers(cid, peerUrls);
+    
+    // Safe to delete only if we have at least replicationFactor copies elsewhere
+    const isSafe = actualReplicas >= config.replicationFactor;
+    
+    if (!isSafe) {
+      logger.warn('Blob not safe to delete - insufficient replicas', {
+        cid,
+        actualReplicas,
+        required: config.replicationFactor
+      });
+    }
+    
+    return isSafe;
+  }
+
+  /**
+   * Track a successful replication (called by replication service)
+   */
+  trackReplication(cid: string, successfulPeers: string[]): void {
+    const complete = successfulPeers.length >= config.replicationFactor;
+    
+    const state: ReplicationState = {
+      cid,
+      replicationFactor: config.replicationFactor,
+      targetNodes: successfulPeers,
+      confirmedNodes: successfulPeers,
+      failedNodes: [],
+      lastUpdated: Date.now(),
+      complete,
+      // SECURITY: Add integrity hash to prevent tampering
+      integrityHash: generateReplicationStateHash(
+        cid,
+        config.replicationFactor,
+        successfulPeers,
+        complete
+      ),
+      lastVerified: Date.now()
+    };
+
+    this.states.set(cid, state);
+    
+    // Save async
+    this.saveStates().catch(err => 
+      logger.warn('Failed to save replication state', { error: err.message })
+    );
+  }
+
+  /**
    * Load replication states from disk
+   * SECURITY: Verifies integrity hash on each state
    */
   private async loadStates(): Promise<void> {
     try {
@@ -327,10 +423,30 @@ export class ReplicationManagerService {
       const statesArray: ReplicationState[] = JSON.parse(data);
 
       this.states.clear();
-      statesArray.forEach(state => {
+      let tampered = 0;
+      
+      for (const state of statesArray) {
+        // SECURITY: Verify integrity hash
+        const integrity = verifyReplicationStateIntegrity(state);
+        if (!integrity.valid) {
+          tampered++;
+          logger.error('SECURITY: Replication state tampered, ignoring', { 
+            cid: state.cid, 
+            reason: integrity.reason 
+          });
+          continue; // Skip tampered states
+        }
+        
         this.states.set(state.cid, state);
-      });
+      }
 
+      if (tampered > 0) {
+        logger.error('SECURITY: Found tampered replication states', { 
+          tampered, 
+          valid: this.states.size 
+        });
+      }
+      
       logger.debug('Loaded replication states', { count: this.states.size });
     } catch (error: any) {
       if (error.code === 'ENOENT') {

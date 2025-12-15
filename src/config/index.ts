@@ -35,7 +35,7 @@ function getEnvBoolean(key: string, defaultValue: boolean): boolean {
   if (value === undefined) {
     return defaultValue;
   }
-  return value.toLowerCase() === 'true.js';
+  return value.toLowerCase() === 'true';
 }
 
 function getEnvArray(key: string, defaultValue: string[] = []): string[] {
@@ -51,13 +51,14 @@ export const config: Config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   nodeId: process.env.NODE_ID || 'vault-node-1',
   port: parseInt(process.env.PORT || '3004'),
-  nodeUrl: process.env.NODE_URL || 'http://hashd.local:3004',
+  nodeUrl: process.env.NODE_URL || 'http://localhost:3004',
 
   // Sharding configuration (Requirement 7)
   shardCount: parseInt(process.env.SHARD_COUNT || '1024'),
+  // Default: responsible for all shards (single-node mode) - use range format
   nodeShards: process.env.NODE_SHARDS 
     ? JSON.parse(process.env.NODE_SHARDS)
-    : [0, 1023], // Default: responsible for all shards (single-node mode)
+    : [{ start: 0, end: 1023 }],
 
   // Garbage collection configuration (Requirement 8)
   gcEnabled: getEnvBoolean('GC_ENABLED', true),
@@ -67,7 +68,8 @@ export const config: Config = {
   gcMinFreeDiskMB: getEnvNumber('GC_MIN_FREE_DISK_MB', 1000),
   gcReservedForPinnedMB: getEnvNumber('GC_RESERVED_FOR_PINNED_MB', 1000),
   gcIntervalMinutes: getEnvNumber('GC_INTERVAL_MINUTES', 10),
-  gcVerifyReplicas: getEnvBoolean('GC_VERIFY_REPLICAS', false),
+  // SECURITY: Default to true to prevent data loss from tampered replication state
+  gcVerifyReplicas: getEnvBoolean('GC_VERIFY_REPLICAS', true),
   gcVerifyProofs: getEnvBoolean('GC_VERIFY_PROOFS', false),
 
   dataDir: getEnv('DATA_DIR', './data'),
@@ -109,5 +111,63 @@ export function validateConfig(): void {
   const validLogLevels = ['debug', 'info', 'warn', 'error'];
   if (!validLogLevels.includes(config.logLevel)) {
     throw new Error(`LOG_LEVEL must be one of: ${validLogLevels.join(', ')}`);
+  }
+
+  // CRITICAL SECURITY CHECK: Prevent dev node from accessing production data
+  validateDataDirectorySafety();
+}
+
+/**
+ * Validate data directory safety to prevent dev nodes from accessing production data
+ * 
+ * SECURITY: Prevents scenarios like:
+ * - Dev node (NODE_ENV=development) pointing to production DATA_DIR
+ * - Accidental force purge of production data
+ * - Cross-environment data corruption
+ */
+function validateDataDirectorySafety(): void {
+  const dataDir = config.dataDir;
+  const nodeEnv = config.nodeEnv;
+
+  // Check for production data directory markers
+  const productionMarkers = [
+    '/production/',
+    '/prod/',
+    'production-data',
+    'prod-data',
+    '/var/vault/production',
+    '/opt/vault/production'
+  ];
+
+  const isDevelopment = nodeEnv === 'development' || nodeEnv === 'test';
+  const hasProductionMarker = productionMarkers.some(marker => 
+    dataDir.toLowerCase().includes(marker.toLowerCase())
+  );
+
+  // CRITICAL: Dev/test nodes cannot use production data directories
+  if (isDevelopment && hasProductionMarker) {
+    throw new Error(
+      `⛔ SECURITY VIOLATION: Development/test node cannot access production data directory!\n` +
+      `NODE_ENV: ${nodeEnv}\n` +
+      `DATA_DIR: ${dataDir}\n` +
+      `This prevents accidental force purge of production data.\n` +
+      `Use a separate data directory for development.`
+    );
+  }
+
+  // Warn if production node uses dev-like data directory
+  if (nodeEnv === 'production') {
+    const devMarkers = ['./data', '/tmp/', 'test-data', 'dev-data'];
+    const hasDevMarker = devMarkers.some(marker => 
+      dataDir.toLowerCase().includes(marker.toLowerCase())
+    );
+
+    if (hasDevMarker) {
+      console.warn(
+        `⚠️ WARNING: Production node using development-like data directory!\n` +
+        `DATA_DIR: ${dataDir}\n` +
+        `Consider using a production path like /var/vault/data or /opt/vault/data`
+      );
+    }
   }
 }

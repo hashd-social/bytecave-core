@@ -8,7 +8,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
-import { generateChallenge, signProof, generateProofData, truncateToHour } from '../utils/proof.js';
+import { signProof, truncateToHour } from '../utils/proof.js';
 import { StorageProof } from '../types/index.js';
 
 export class ProofService {
@@ -71,17 +71,25 @@ export class ProofService {
       this.privateKey = Buffer.from(privateKey);
       this.publicKey = Buffer.from(publicKey);
 
-      // Save keys
+      // Save keys with restricted permissions (owner read/write only)
       await fs.writeFile(
         keyPath,
         JSON.stringify({
           publicKey: this.publicKey.toString('hex'),
           privateKey: this.privateKey.toString('hex'),
           generated: Date.now()
-        }, null, 2)
+        }, null, 2),
+        { mode: 0o600 }
       );
 
       logger.info('Generated new node keys', { keyPath });
+    }
+
+    // Ensure existing key file has correct permissions
+    try {
+      await fs.chmod(keyPath, 0o600);
+    } catch {
+      // Ignore if chmod fails (e.g., Windows)
     }
   }
 

@@ -9,6 +9,7 @@ export interface BlobMetadata {
   createdAt: number;
   version: number; // Schema version, starting at 1
   pinned?: boolean; // Never delete if true (Requirement 9)
+  integrityHash?: string; // HMAC of critical fields to detect tampering
   replication?: {
     fromPeer?: string;
     replicatedAt?: number;
@@ -67,6 +68,14 @@ export interface HealthResponse {
     requestsLastHour: number;
     avgResponseTime: number;
     successRate: number;
+  };
+  integrity?: {
+    checked: number;
+    passed: number;
+    failed: number;
+    orphaned: number;
+    metadataTampered: number;
+    failedCids: string[];
   };
 }
 
@@ -247,6 +256,8 @@ export interface ReplicationState {
   failedNodes: string[];        // Nodes that failed to store
   lastUpdated: number;
   complete: boolean;
+  integrityHash?: string;       // HMAC to detect tampering
+  lastVerified?: number;        // Last time replicas were verified with peers
 }
 
 export interface ReplicationStatus {
@@ -754,4 +765,65 @@ export class PayloadTooLargeError extends VaultError {
       { size, maxSize }
     );
   }
+}
+
+export class UnauthorizedError extends VaultError {
+  constructor(message: string, details?: any) {
+    super(message, 'UNAUTHORIZED', 401, details);
+  }
+}
+
+export class ForbiddenError extends VaultError {
+  constructor(message: string, details?: any) {
+    super(message, 'FORBIDDEN', 403, details);
+  }
+}
+
+// ============================================
+// STORAGE AUTHORIZATION (Direct Storage Spec)
+// ============================================
+
+export type AuthorizationType = 
+  | 'group_post' 
+  | 'group_comment' 
+  | 'message' 
+  | 'token_distribution';
+
+export interface StorageAuthorization {
+  type: AuthorizationType;
+  sender: string;              // Ethereum address
+  signature: string;           // EIP-191 signature
+  timestamp: number;           // Unix timestamp (ms)
+  nonce: string;               // Random nonce for replay protection
+  contentHash: string;         // keccak256(ciphertext)
+  
+  // Type-specific context
+  groupPostsAddress?: string;  // For group_post, group_comment
+  postId?: number;             // For group_comment
+  threadId?: string;           // For message (bytes32 hex)
+  participants?: string[];     // For message (sorted addresses)
+  tokenAddress?: string;       // For token_distribution
+}
+
+export interface AuthorizedStoreRequest {
+  ciphertext: string;          // Base64 encoded
+  mimeType: string;
+  authorization: StorageAuthorization;
+}
+
+export interface AuthorizedStoreResponse {
+  success: boolean;
+  cid: string;
+  timestamp: number;
+  replicationStatus: {
+    target: number;
+    confirmed: number;
+  };
+}
+
+export interface AuthorizationVerificationResult {
+  authorized: boolean;
+  sender?: string;
+  error?: string;
+  details?: any;
 }

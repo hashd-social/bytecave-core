@@ -368,6 +368,146 @@ export class GarbageCollectionService {
   isRunning(): boolean {
     return this.running;
   }
+
+  /**
+   * Force purge ALL blobs (DEV ONLY)
+   * 
+   * ⚠️ DANGER: Bypasses all safety checks
+   * - Deletes ALL blobs (including pinned)
+   * - Ignores shard assignments
+   * - Ignores replication factor
+   * 
+   * Use ONLY for:
+   * - Local development/testing
+   * - Single-node environments
+   * - Complete node reset
+   */
+  async forcePurgeAll(): Promise<GCResult> {
+    // CRITICAL: Prevent execution in production
+    if (config.nodeEnv === 'production') {
+      logger.error('⛔ BLOCKED: Force purge attempted in PRODUCTION environment');
+      throw new Error('Force purge is disabled in production environments');
+    }
+
+    if (this.running) {
+      throw new Error('GC already running');
+    }
+
+    this.running = true;
+    const startTime = Date.now();
+
+    try {
+      logger.warn('⚠️ FORCE PURGE - Deleting ALL blobs (bypassing safety checks)');
+
+      const result: GCResult = {
+        checked: 0,
+        deleted: 0,
+        skippedPinned: 0,
+        skippedInsufficientReplicas: 0,
+        skippedShardMismatch: 0,
+        freedBytes: 0,
+        deletedCids: []
+      };
+
+      // Get ALL blobs
+      const allBlobs = await storageService.listBlobs();
+      result.checked = allBlobs.length;
+
+      logger.warn(`Force purging ${allBlobs.length} blobs`);
+
+      // Delete every single blob (no safety checks)
+      for (const blob of allBlobs) {
+        try {
+          await storageService.deleteBlob(blob.cid);
+          result.deleted++;
+          result.freedBytes += blob.size;
+          result.deletedCids.push(blob.cid);
+        } catch (error: any) {
+          logger.error('Failed to delete blob during force purge', {
+            cid: blob.cid,
+            error: error.message
+          });
+        }
+      }
+
+      const duration = Date.now() - startTime;
+
+      logger.warn('Force purge completed', {
+        ...result,
+        durationMs: duration
+      });
+
+      return result;
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /**
+   * Delete a single blob with safety checks (PRODUCTION SAFE)
+   * 
+   * @param cid - Content ID to delete
+   * @param skipReplicationCheck - Skip replication verification (still respects pins)
+   * @returns Deletion result
+   */
+  async deleteSingleBlob(cid: string, skipReplicationCheck = false): Promise<{
+    success: boolean;
+    cid: string;
+    deleted: boolean;
+    reason?: string;
+    size?: number;
+  }> {
+    try {
+      // Get metadata
+      const metadata = await storageService.getMetadata(cid);
+      if (!metadata) {
+        return {
+          success: false,
+          cid,
+          deleted: false,
+          reason: 'Blob not found'
+        };
+      }
+
+      // Check if can safely delete
+      const canDelete = await this.canSafelyDelete(cid);
+      
+      // If skipReplicationCheck is true, allow deletion even with insufficient replicas
+      // BUT still respect pins and shard assignments
+      if (!canDelete.allowed) {
+        if (canDelete.reason === 'insufficient_replicas' && skipReplicationCheck) {
+          logger.warn('Skipping replication check for blob deletion', { cid });
+        } else {
+          return {
+            success: false,
+            cid,
+            deleted: false,
+            reason: canDelete.reason
+          };
+        }
+      }
+
+      // Delete the blob
+      await storageService.deleteBlob(cid);
+
+      logger.info('Blob deleted', { cid, size: metadata.size });
+
+      return {
+        success: true,
+        cid,
+        deleted: true,
+        size: metadata.size
+      };
+    } catch (error: any) {
+      logger.error('Failed to delete blob', { cid, error: error.message });
+      return {
+        success: false,
+        cid,
+        deleted: false,
+        reason: error.message
+      };
+    }
+  }
 }
 
 // Singleton instance

@@ -1,42 +1,150 @@
 /**
  * HASHD Vault - Store Route
- * POST /store - Store encrypted blob
+ * POST /store - Store encrypted blob with authorization
+ * 
+ * Requires on-chain authorization verification for:
+ * - group_post: Sender must be group member
+ * - group_comment: Sender must be group member
+ * - message: Sender must be thread participant
+ * - token_distribution: Sender must be group owner
  */
 
 import { Request, Response } from 'express';
+import { ethers } from 'ethers';
 import { config } from '../config/index.js';
 import { storageService } from '../services/storage.service.js';
 import { replicationService } from '../services/replication.service.js';
 import { metricsService } from '../services/metrics.service.js';
+import { storageAuthorizationService } from '../services/storage-authorization.service.js';
 import { logger } from '../utils/logger.js';
 import { generateCID, validateCiphertext } from '../utils/cid.js';
-import { validateStoreRequest } from '../utils/validation.js';
-import { StoreRequest, StoreResponse } from '../types/index.js';
+import { 
+  AuthorizedStoreRequest, 
+  AuthorizedStoreResponse,
+  StorageAuthorization
+} from '../types/index.js';
+
+/**
+ * Validate the authorization object structure
+ */
+function validateAuthorization(auth: any): auth is StorageAuthorization {
+  if (!auth || typeof auth !== 'object') return false;
+  if (!['group_post', 'group_comment', 'message', 'token_distribution'].includes(auth.type)) return false;
+  if (!auth.sender || !ethers.isAddress(auth.sender)) return false;
+  if (!auth.signature || typeof auth.signature !== 'string') return false;
+  if (!auth.timestamp || typeof auth.timestamp !== 'number') return false;
+  if (!auth.nonce || typeof auth.nonce !== 'string') return false;
+  if (!auth.contentHash || typeof auth.contentHash !== 'string') return false;
+  
+  // Type-specific validation
+  if (auth.type === 'group_post' || auth.type === 'group_comment') {
+    if (!auth.groupPostsAddress || !ethers.isAddress(auth.groupPostsAddress)) return false;
+  }
+  if (auth.type === 'message') {
+    if (!auth.threadId || typeof auth.threadId !== 'string') return false;
+    if (!auth.participants || !Array.isArray(auth.participants) || auth.participants.length < 2) return false;
+  }
+  if (auth.type === 'token_distribution') {
+    if (!auth.tokenAddress || !ethers.isAddress(auth.tokenAddress)) return false;
+  }
+  
+  return true;
+}
 
 export async function storeHandler(req: Request, res: Response): Promise<void> {
   const startTime = Date.now();
 
   try {
-    // Validate request
-    validateStoreRequest(req.body);
+    const { ciphertext, mimeType, authorization } = req.body as AuthorizedStoreRequest;
 
-    const { ciphertext, mimeType } = req.body as StoreRequest;
+    // Validate required fields
+    if (!ciphertext || typeof ciphertext !== 'string') {
+      res.status(400).json({
+        error: 'INVALID_REQUEST',
+        message: 'ciphertext is required',
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    if (!mimeType || typeof mimeType !== 'string') {
+      res.status(400).json({
+        error: 'INVALID_REQUEST',
+        message: 'mimeType is required',
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    if (!authorization) {
+      res.status(400).json({
+        error: 'INVALID_REQUEST',
+        message: 'authorization is required',
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    // Validate authorization structure
+    if (!validateAuthorization(authorization)) {
+      res.status(400).json({
+        error: 'INVALID_AUTHORIZATION',
+        message: 'Invalid authorization object structure',
+        timestamp: Date.now()
+      });
+      return;
+    }
 
     // Validate and convert ciphertext
     const ciphertextBuffer = validateCiphertext(ciphertext);
 
+    // Compute content hash for verification
+    const actualContentHash = ethers.keccak256(ciphertextBuffer);
+
+    // Verify authorization
+    const authResult = await storageAuthorizationService.verifyAuthorization(
+      authorization,
+      actualContentHash
+    );
+
+    if (!authResult.authorized) {
+      logger.warn('Authorization failed', {
+        sender: authorization.sender,
+        type: authorization.type,
+        error: authResult.error
+      });
+      
+      res.status(403).json({
+        error: 'FORBIDDEN',
+        message: authResult.error || 'Authorization failed',
+        details: authResult.details,
+        timestamp: Date.now()
+      });
+      return;
+    }
+
     // Generate CID
     const cid = generateCID(ciphertextBuffer);
 
-    logger.info('Store request received', { cid, size: ciphertextBuffer.length });
+    logger.info('Authorized store request', { 
+      cid, 
+      size: ciphertextBuffer.length,
+      sender: authorization.sender,
+      type: authorization.type
+    });
 
-    // Check capacity before storing (Requirement 2.7)
+    // Check capacity before storing
     const stats = await storageService.getStats();
     const maxCapacityBytes = config.maxStorageGB * 1024 * 1024 * 1024;
     const newTotalSize = stats.totalSize + ciphertextBuffer.length;
     
     if (newTotalSize > maxCapacityBytes) {
-      throw new Error(`CAPACITY_EXCEEDED: Node is full (${stats.totalSize}/${maxCapacityBytes} bytes)`);
+      res.status(507).json({
+        error: 'STORAGE_FULL',
+        message: 'Node storage capacity exceeded',
+        timestamp: Date.now()
+      });
+      return;
     }
 
     // Store blob locally
@@ -47,23 +155,27 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
       .replicateToAll(cid, ciphertextBuffer, mimeType)
       .then(peers => {
         logger.debug('Replication completed', { cid, peers: peers.length });
-        return peers;
+        return peers.length;
       })
       .catch(err => {
         logger.warn('Replication failed', { cid, error: err.message });
-        return [];
+        return 0;
       });
 
     // Wait for replication with timeout
-    const replicationSuggested = await Promise.race([
+    const confirmedReplicas = await Promise.race([
       replicationPromise,
-      new Promise<string[]>(resolve => setTimeout(() => resolve([]), 2000))
+      new Promise<number>(resolve => setTimeout(() => resolve(0), 2000))
     ]);
 
-    const response: StoreResponse = {
+    const response: AuthorizedStoreResponse = {
+      success: true,
       cid,
-      replicationSuggested,
-      storedAt: Date.now()
+      timestamp: Date.now(),
+      replicationStatus: {
+        target: config.replicationFactor,
+        confirmed: confirmedReplicas + 1 // +1 for this node
+      }
     };
 
     const latency = Date.now() - startTime;
@@ -74,8 +186,10 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
     logger.info('Blob stored successfully', {
       cid,
       size: ciphertextBuffer.length,
+      sender: authorization.sender,
+      type: authorization.type,
       latency,
-      replicated: replicationSuggested.length
+      replicas: confirmedReplicas + 1
     });
   } catch (error: any) {
     const latency = Date.now() - startTime;

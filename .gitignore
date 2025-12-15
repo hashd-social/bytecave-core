@@ -13,6 +13,7 @@ dist/
 
 # Data directories
 data/
+data*/
 config/peers.json
 config/banlist.json
 

@@ -41,7 +41,7 @@ import {
 } from './routes/replication-status.route.js';
 import { shardsHandler } from './routes/shards.route.js';
 import { validateShardAssignment, validateShardForProof } from './middleware/shard-validation.middleware.js';
-import { gcStatusHandler, triggerGCHandler } from './routes/gc.route.js';
+import { gcStatusHandler, triggerGCHandler, forcePurgeHandler, deleteBlobHandler } from './routes/gc.route.js';
 import { 
   pinBlobHandler, 
   unpinBlobHandler, 
@@ -60,6 +60,20 @@ import {
 import { nodeInfoHandler } from './routes/node-info.route.js';
 import { contractIntegrationService } from './services/contract-integration.service.js';
 import { ethers } from 'ethers';
+import {
+  generalLimiter,
+  storageLimiter,
+  proofLimiter,
+  replicationLimiter,
+  adminLimiter,
+  readLimiter
+} from './middleware/rate-limit.middleware.js';
+import {
+  tlsEnforcementMiddleware,
+  checkProductionSecurity,
+  requestTimeoutMiddleware
+} from './middleware/security.middleware.js';
+import { storageAuthorizationService } from './services/storage-authorization.service.js';
 
 const app = express();
 
@@ -93,7 +107,7 @@ app.use(cors({
     }
   },
   credentials: false,
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Accept'],
   exposedHeaders: ['Content-Type']
 }));
@@ -107,64 +121,77 @@ app.set('json spaces', 2);
 // Request logging
 app.use(requestLogger);
 
+// Security middleware
+app.use(tlsEnforcementMiddleware);
+app.use(requestTimeoutMiddleware(30000)); // 30 second timeout
+
 // Disable x-powered-by header
 app.disable('x-powered-by');
 
 /**
- * Routes
+ * Routes with Rate Limiting
  */
 
 // Storage endpoints with shard validation (R7.5)
-app.post('/store', validateShardAssignment, storeHandler);
-app.post('/replicate', validateShardAssignment, replicateHandler);
+app.post('/store', storageLimiter, validateShardAssignment, storeHandler);
+app.post('/replicate', replicationLimiter, validateShardAssignment, replicateHandler);
 
-app.get('/blob/:cid', blobHandler);
-app.get('/blobs', listHandler);
-app.get('/health', healthHandler);
-app.get('/status', statusHandler);
+// Read endpoints
+app.get('/blob/:cid', readLimiter, blobHandler);
+app.get('/blobs', readLimiter, listHandler);
+app.get('/health', generalLimiter, healthHandler);
+app.get('/status', generalLimiter, statusHandler);
 
 // Proof endpoints with shard validation (Requirement 4, R7.8)
-app.post('/proofs/generate', validateShardForProof, proofGenerateHandler);
-app.get('/proofs/:cid', proofListHandler);
-app.get('/proofs', proofStatsHandler);
+app.post('/proofs/generate', proofLimiter, validateShardForProof, proofGenerateHandler);
+app.get('/proofs/:cid', readLimiter, proofListHandler);
+app.get('/proofs', readLimiter, proofStatsHandler);
 
 // Reputation endpoints (Requirement 5)
-app.get('/reputation/score', reputationScoreHandler);
-app.get('/reputation/snapshot', reputationSnapshotHandler);
-app.post('/reputation/report', reputationReportHandler);
-app.get('/reputation/stats', reputationStatsHandler);
-app.get('/reputation/scores', allScoresHandler);
-app.get('/node/reputation', nodeReputationHandler);
+app.get('/reputation/score', readLimiter, reputationScoreHandler);
+app.get('/reputation/snapshot', readLimiter, reputationSnapshotHandler);
+app.post('/reputation/report', generalLimiter, reputationReportHandler);
+app.get('/reputation/stats', readLimiter, reputationStatsHandler);
+app.get('/reputation/scores', readLimiter, allScoresHandler);
+app.get('/node/reputation', readLimiter, nodeReputationHandler);
 
 // Replication status endpoints (Requirement 6)
-app.get('/replication/:cid', replicationStatusHandler);
-app.get('/replication', allReplicationStatesHandler);
-app.get('/replication-stats', replicationStatsHandler);
+app.get('/replication/:cid', readLimiter, replicationStatusHandler);
+app.get('/replication', readLimiter, allReplicationStatesHandler);
+app.get('/replication-stats', readLimiter, replicationStatsHandler);
 
 // Shard discovery endpoint (Requirement 7)
-app.get('/shards', shardsHandler);
+app.get('/shards', readLimiter, shardsHandler);
 
 // Garbage collection endpoints (Requirement 8)
-app.get('/gc/status', gcStatusHandler);
-app.post('/admin/gc', triggerGCHandler);
+app.get('/gc/status', readLimiter, gcStatusHandler);
+app.post('/admin/gc', adminLimiter, triggerGCHandler);
+app.delete('/admin/blob/:cid', adminLimiter, deleteBlobHandler);
+
+// DEV ONLY - Force purge endpoint (bypasses all safety checks)
+// Only available in development/test environments
+if (config.nodeEnv === 'development' || config.nodeEnv === 'test') {
+  app.post('/admin/force-purge', adminLimiter, forcePurgeHandler);
+  logger.warn('⚠️ Force purge endpoint enabled (DEV/TEST MODE ONLY)');
+}
 
 // Pinning endpoints (Requirement 9)
-app.post('/pin/:cid', pinBlobHandler);
-app.delete('/pin/:cid', unpinBlobHandler);
-app.get('/pin/list', listPinnedBlobsHandler);
-app.post('/pin/bulk', bulkPinHandler);
-app.get('/blobs/:cid/status', blobStatusHandler);
+app.post('/pin/:cid', generalLimiter, pinBlobHandler);
+app.delete('/pin/:cid', generalLimiter, unpinBlobHandler);
+app.get('/pin/list', readLimiter, listPinnedBlobsHandler);
+app.post('/pin/bulk', generalLimiter, bulkPinHandler);
+app.get('/blobs/:cid/status', readLimiter, blobStatusHandler);
 
 // Feed endpoints (Requirement 10)
-app.get('/feed/:feedId', getFeedHandler);
-app.get('/feed/:feedId/blobs', getFeedBlobsHandler);
-app.post('/feed', createFeedHandler);
-app.post('/feed/:feedId/entry', addFeedEntryHandler);
-app.get('/feed/:feedId/validate', validateFeedHandler);
-app.get('/feed/:feedId/forks', resolveFeedForksHandler);
+app.get('/feed/:feedId', readLimiter, getFeedHandler);
+app.get('/feed/:feedId/blobs', readLimiter, getFeedBlobsHandler);
+app.post('/feed', storageLimiter, createFeedHandler);
+app.post('/feed/:feedId/entry', storageLimiter, addFeedEntryHandler);
+app.get('/feed/:feedId/validate', readLimiter, validateFeedHandler);
+app.get('/feed/:feedId/forks', readLimiter, resolveFeedForksHandler);
 
 // Node discovery endpoint (Requirement 11)
-app.get('/node/info', nodeInfoHandler);
+app.get('/node/info', readLimiter, nodeInfoHandler);
 
 // Root endpoint
 app.get('/', (_req, res) => {
@@ -205,6 +232,15 @@ async function initialize(): Promise<void> {
     validateConfig();
     logger.info('Configuration validated');
 
+    // Run production security checks
+    checkProductionSecurity();
+
+    // Initialize contract integration first (needed for peer discovery)
+    await initializeContractIntegration();
+
+    // Initialize storage authorization service
+    await initializeStorageAuthorization();
+
     // Initialize services
     await storageService.initialize();
     await banlistService.initialize();
@@ -216,9 +252,6 @@ async function initialize(): Promise<void> {
     await feedService.initialize();
 
     logger.info('Services initialized');
-
-    // Initialize contract integration and auto-register (Requirement 3)
-    await initializeContractIntegration();
   } catch (error) {
     logger.error('Initialization failed', error);
     process.exit(1);
@@ -301,6 +334,35 @@ async function initializeContractIntegration(): Promise<void> {
 }
 
 /**
+ * Initialize storage authorization service for on-chain verification
+ */
+async function initializeStorageAuthorization(): Promise<void> {
+  const rpcUrl = process.env.RPC_URL;
+  const groupFactoryAddress = process.env.GROUP_FACTORY_ADDRESS;
+
+  // Skip if not configured
+  if (!rpcUrl || !groupFactoryAddress) {
+    logger.warn('Storage authorization not configured (GROUP_FACTORY_ADDRESS required)');
+    logger.warn('Storage requests will fail without authorization service');
+    return;
+  }
+
+  try {
+    logger.info('Initializing storage authorization service...');
+    
+    await storageAuthorizationService.initialize({
+      rpcUrl,
+      groupFactoryAddress
+    });
+
+    logger.info('✅ Storage authorization service initialized');
+  } catch (error: any) {
+    logger.error('Failed to initialize storage authorization service', error.message);
+    throw error; // This is critical - fail startup if authorization can't be initialized
+  }
+}
+
+/**
  * Graceful shutdown
  */
 
@@ -335,11 +397,16 @@ async function start(): Promise<void> {
   try {
     await initialize();
 
+    // Generate node public key for display
+    const nodePublicKey = ethers.keccak256(ethers.toUtf8Bytes(config.nodeId));
+
     const server = app.listen(config.port, () => {
       logger.info('🚀 HASHD Vault v1.0.0');
       logger.info(`   Environment: ${config.nodeEnv}`);
+      logger.info(`   Node ID: ${config.nodeId}`);
       logger.info(`   Port: ${config.port}`);
       logger.info(`   Node URL: ${config.nodeUrl}`);
+      logger.info(`   Public Key: ${nodePublicKey}`);
       logger.info(`   Data directory: ${config.dataDir}`);
       logger.info(`   Max blob size: ${config.maxBlobSizeMB}MB`);
       logger.info(`   Max storage: ${config.maxStorageGB}GB`);

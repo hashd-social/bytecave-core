@@ -1,22 +1,19 @@
 /**
  * HASHD Vault - Replication Service
  * 
- * Handles peer-to-peer blob replication
+ * Handles peer-to-peer blob replication using on-chain registry
  */
 
-import fs from 'fs/promises';
-import path from 'path';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
-import { Peer, PeerConfig, ReplicateRequest } from '../types/index.js';
+import { Peer, ReplicateRequest } from '../types/index.js';
+import { contractIntegrationService } from './contract-integration.service.js';
+import { storageService } from './storage.service.js';
+import { replicationManager } from './replication-manager.service.js';
 
 export class ReplicationService {
   private peers: Peer[] = [];
-  private peersPath: string;
-
-  constructor() {
-    this.peersPath = path.join(process.cwd(), 'config', 'peers.json');
-  }
+  private refreshInterval: NodeJS.Timeout | null = null;
 
   /**
    * Initialize replication service
@@ -27,7 +24,17 @@ export class ReplicationService {
       return;
     }
 
-    await this.loadPeers();
+    // Load peers from on-chain registry
+    await this.loadPeersFromRegistry();
+
+    // Refresh peers periodically (every 60 seconds)
+    this.refreshInterval = setInterval(() => {
+      this.loadPeersFromRegistry().catch((err: Error) => 
+        logger.warn('Failed to refresh peers from registry', { error: err.message })
+      );
+    }, 60000);
+
+    logger.info('Replication service initialized');
   }
 
   /**
@@ -76,6 +83,11 @@ export class ReplicationService {
       successful: successful.length,
       total: enabledPeers.length
     });
+
+    // Track replication in manager for stats
+    if (successful.length > 0) {
+      replicationManager.trackReplication(cid, successful);
+    }
 
     return successful;
   }
@@ -173,67 +185,219 @@ export class ReplicationService {
   }
 
   /**
-   * Load peers from config
+   * Load peers from on-chain registry
    */
-  async loadPeers(): Promise<void> {
+  async loadPeersFromRegistry(): Promise<void> {
     try {
-      // Check if file exists
-      try {
-        await fs.access(this.peersPath);
-      } catch {
-        // Create default peers config
-        await this.createDefaultPeersConfig();
+      if (!contractIntegrationService.isInitialized()) {
+        logger.info('Contract integration not initialized, skipping peer discovery');
+        return;
       }
 
-      const content = await fs.readFile(this.peersPath, 'utf-8');
-      const peerConfig: PeerConfig = JSON.parse(content);
+      // Get active nodes from registry
+      const nodeIds = await contractIntegrationService.getActiveNodes();
+      logger.info('Found nodes in registry', { count: nodeIds.length, nodeIds });
+      
+      if (nodeIds.length === 0) {
+        logger.debug('No active nodes in registry');
+        this.peers = [];
+        return;
+      }
 
-      this.peers = peerConfig.peers || [];
+      // Fetch node details and convert to peers
+      const peerPromises = nodeIds.map(async (nodeId: string) => {
+        const node = await contractIntegrationService.getNode(nodeId);
+        if (!node || !node.active) {
+          logger.debug('Node not active or not found', { nodeId });
+          return null;
+        }
+        
+        // Skip self
+        if (node.url === config.nodeUrl) {
+          logger.debug('Skipping self', { url: node.url });
+          return null;
+        }
 
-      logger.info('Peers loaded', {
+        return {
+          url: node.url,
+          nodeId: node.nodeId,
+          publicKey: node.publicKey,
+          enabled: true,
+          priority: 1,
+          healthy: true,
+          lastHealthCheck: Date.now()
+        } as Peer;
+      });
+
+      const results = await Promise.all(peerPromises);
+      this.peers = results.filter((p): p is Peer => p !== null);
+
+      logger.info('Peers loaded from registry', {
         total: this.peers.length,
-        enabled: this.peers.filter(p => p.enabled).length
+        peers: this.peers.map(p => p.url)
       });
 
       // Health check peers in background
-      this.healthCheckPeers().catch(err =>
+      this.healthCheckPeers().catch((err: Error) =>
         logger.warn('Failed to health check peers', { error: err.message })
       );
+
+      // Sync blobs bidirectionally
+      if (this.peers.length > 0) {
+        // Push our blobs to peers
+        this.syncExistingBlobs().catch((err: Error) =>
+          logger.warn('Failed to sync existing blobs', { error: err.message })
+        );
+        // Pull missing blobs from peers
+        this.pullMissingBlobs().catch((err: Error) =>
+          logger.warn('Failed to pull missing blobs', { error: err.message })
+        );
+      }
     } catch (error) {
-      logger.error('Failed to load peers', error);
-      this.peers = [];
+      logger.error('Failed to load peers from registry', error);
     }
   }
 
   /**
-   * Reload peers
+   * Sync all existing blobs to peers
    */
-  async reloadPeers(): Promise<void> {
-    await this.loadPeers();
+  async syncExistingBlobs(): Promise<void> {
+    try {
+      const blobs = await storageService.listBlobs();
+      
+      if (blobs.length === 0) {
+        logger.debug('No blobs to sync');
+        return;
+      }
+
+      logger.info('Starting blob sync to peers', {
+        blobCount: blobs.length,
+        peerCount: this.peers.length
+      });
+
+      let synced = 0;
+      let failed = 0;
+
+      for (const blob of blobs) {
+        try {
+          // Get the blob data
+          const blobData = await storageService.getBlob(blob.cid);
+          
+          // Replicate to all peers
+          const results = await this.replicateToAll(
+            blob.cid,
+            blobData.ciphertext,
+            blob.mimeType
+          );
+
+          if (results.length > 0) {
+            synced++;
+          }
+        } catch (err: any) {
+          logger.debug('Failed to sync blob', { cid: blob.cid, error: err.message });
+          failed++;
+        }
+      }
+
+      logger.info('Blob sync completed', { synced, failed, total: blobs.length });
+    } catch (error) {
+      logger.error('Blob sync failed', error);
+    }
   }
 
   /**
-   * Private helper methods
+   * Pull missing blobs from peers (bidirectional sync)
    */
+  async pullMissingBlobs(): Promise<void> {
+    try {
+      // Get our local blobs
+      const localBlobs = await storageService.listBlobs();
+      const localCids = new Set(localBlobs.map(b => b.cid));
 
-  private async createDefaultPeersConfig(): Promise<void> {
-    const configDir = path.dirname(this.peersPath);
-    await fs.mkdir(configDir, { recursive: true });
+      let pulled = 0;
+      let failed = 0;
 
-    const defaultConfig: PeerConfig = {
-      peers: [],
-      replicationFactor: config.replicationFactor,
-      replicationTimeout: config.replicationTimeoutMs
-    };
+      // Check each peer for blobs we don't have
+      for (const peer of this.peers.filter(p => p.enabled && p.healthy)) {
+        try {
+          // Get peer's blob list
+          const response = await fetch(`${peer.url}/blobs`, {
+            signal: AbortSignal.timeout(5000)
+          });
 
-    await fs.writeFile(
-      this.peersPath,
-      JSON.stringify(defaultConfig, null, 2)
-    );
+          if (!response.ok) continue;
 
-    logger.info('Created default peers config', { path: this.peersPath });
+          const peerData = await response.json() as { blobs: Array<{ cid: string; mimeType: string }> };
+          
+          // Find blobs we don't have
+          const missingBlobs = peerData.blobs.filter(b => !localCids.has(b.cid));
+
+          if (missingBlobs.length === 0) continue;
+
+          logger.info('Found missing blobs from peer', {
+            peer: peer.url,
+            missing: missingBlobs.length
+          });
+
+          // Pull each missing blob
+          for (const blob of missingBlobs) {
+            try {
+              // Fetch the blob data
+              const blobResponse = await fetch(`${peer.url}/blob/${blob.cid}`, {
+                signal: AbortSignal.timeout(config.replicationTimeoutMs)
+              });
+
+              if (!blobResponse.ok) {
+                failed++;
+                continue;
+              }
+
+              const blobData = await blobResponse.json() as { 
+                cid: string; 
+                ciphertext: string; 
+                mimeType: string 
+              };
+
+              // Store locally
+              const ciphertextBuffer = Buffer.from(blobData.ciphertext, 'base64');
+              await storageService.storeBlob(
+                blobData.cid,
+                ciphertextBuffer,
+                blobData.mimeType
+              );
+
+              pulled++;
+              localCids.add(blobData.cid); // Track so we don't pull again from another peer
+
+              logger.debug('Pulled blob from peer', { cid: blob.cid, peer: peer.url });
+            } catch (err: any) {
+              logger.debug('Failed to pull blob', { cid: blob.cid, error: err.message });
+              failed++;
+            }
+          }
+        } catch (err: any) {
+          logger.debug('Failed to get blob list from peer', { peer: peer.url, error: err.message });
+        }
+      }
+
+      if (pulled > 0 || failed > 0) {
+        logger.info('Pull sync completed', { pulled, failed });
+      }
+    } catch (error) {
+      logger.error('Pull sync failed', error);
+    }
   }
 
+  /**
+   * Reload peers from registry
+   */
+  async reloadPeers(): Promise<void> {
+    await this.loadPeersFromRegistry();
+  }
+
+  /**
+   * Health check all peers
+   */
   private async healthCheckPeers(): Promise<void> {
     const checks = this.peers.map(async peer => {
       const healthy = await this.checkPeerHealth(peer.url);
@@ -247,6 +411,16 @@ export class ReplicationService {
     logger.debug('Peer health check completed', {
       results: results.map(r => ({ url: r.url, healthy: r.healthy }))
     });
+  }
+
+  /**
+   * Cleanup on shutdown
+   */
+  shutdown(): void {
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+      this.refreshInterval = null;
+    }
   }
 }
 

@@ -8,6 +8,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
+import { generateMetadataIntegrityHash, verifyMetadataIntegrity } from '../utils/cid.js';
 import { BlobMetadata, BlobNotFoundError, StorageFullError } from '../types/index.js';
 
 export class StorageService {
@@ -21,24 +22,94 @@ export class StorageService {
   }
 
   /**
-   * Initialize storage directories
+   * Initialize storage service
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
     try {
+      // Create directories
       await fs.mkdir(this.blobsDir, { recursive: true });
       await fs.mkdir(this.metaDir, { recursive: true });
-      
-      logger.info('Storage directories initialized', {
-        blobsDir: this.blobsDir,
-        metaDir: this.metaDir
-      });
+
+      // Create environment marker file for safety checks
+      await this.createEnvironmentMarker();
 
       this.initialized = true;
+      logger.info('Storage service initialized', {
+        blobsDir: this.blobsDir,
+        metaDir: this.metaDir,
+        environment: config.nodeEnv
+      });
     } catch (error) {
-      logger.error('Failed to initialize storage', error);
+      logger.error('Failed to initialize storage service', error);
       throw error;
+    }
+  }
+
+  /**
+   * Create environment marker file
+   * 
+   * SECURITY: Creates a marker file that identifies the environment
+   * - Helps detect if data directory was manually moved
+   * - Prevents dev nodes from accidentally using production data
+   * - Provides recovery information if data is deleted
+   */
+  private async createEnvironmentMarker(): Promise<void> {
+    const markerPath = path.join(config.dataDir, '.vault-environment');
+    
+    try {
+      // Check if marker exists
+      const exists = await fs.access(markerPath).then(() => true).catch(() => false);
+      
+      if (exists) {
+        // Read existing marker
+        const existingMarker = JSON.parse(await fs.readFile(markerPath, 'utf-8'));
+        
+        // CRITICAL: Detect environment mismatch
+        if (existingMarker.environment !== config.nodeEnv) {
+          const isDangerousMismatch = 
+            (existingMarker.environment === 'production' && config.nodeEnv === 'development') ||
+            (existingMarker.environment === 'production' && config.nodeEnv === 'test');
+          
+          if (isDangerousMismatch) {
+            throw new Error(
+              `⛔ ENVIRONMENT MISMATCH DETECTED!\n` +
+              `Data directory was created in: ${existingMarker.environment}\n` +
+              `Current NODE_ENV: ${config.nodeEnv}\n` +
+              `This prevents dev nodes from accessing production data.\n` +
+              `If this is intentional, delete ${markerPath} and restart.`
+            );
+          } else {
+            logger.warn('Environment changed', {
+              previous: existingMarker.environment,
+              current: config.nodeEnv,
+              dataDir: config.dataDir
+            });
+          }
+        }
+      }
+      
+      // Create/update marker
+      const marker = {
+        environment: config.nodeEnv,
+        nodeId: config.nodeId,
+        createdAt: exists ? JSON.parse(await fs.readFile(markerPath, 'utf-8')).createdAt : Date.now(),
+        lastStarted: Date.now(),
+        version: '1.0.0'
+      };
+      
+      await fs.writeFile(markerPath, JSON.stringify(marker, null, 2));
+      
+      // Make it read-only in production
+      if (config.nodeEnv === 'production') {
+        await fs.chmod(markerPath, 0o444); // Read-only
+      }
+    } catch (error: any) {
+      if (error.message.includes('ENVIRONMENT MISMATCH')) {
+        throw error; // Re-throw security errors
+      }
+      logger.warn('Failed to create environment marker', error);
     }
   }
 
@@ -71,12 +142,15 @@ export class StorageService {
       await fs.rename(tempPath, blobPath);
 
       // Create metadata
+      const createdAt = Date.now();
       const metadata: BlobMetadata = {
         cid,
         size: ciphertext.length,
         mimeType,
-        createdAt: Date.now(),
-        version: 1, // Schema version
+        createdAt,
+        version: 2, // Schema version (2 = with integrity hash)
+        // SECURITY: Generate integrity hash to detect metadata tampering
+        integrityHash: generateMetadataIntegrityHash(cid, ciphertext.length, mimeType, createdAt, false),
         replication: replicationMeta ? {
           fromPeer: replicationMeta.fromPeer,
           replicatedAt: Date.now(),
@@ -179,6 +253,7 @@ export class StorageService {
 
   /**
    * Get metadata
+   * SECURITY: Verifies integrity hash to detect tampering
    */
   async getMetadata(cid: string): Promise<BlobMetadata> {
     await this.ensureInitialized();
@@ -187,7 +262,23 @@ export class StorageService {
 
     try {
       const content = await fs.readFile(metaPath, 'utf-8');
-      return JSON.parse(content);
+      const metadata = JSON.parse(content) as BlobMetadata;
+      
+      // SECURITY: Verify metadata integrity
+      const integrity = verifyMetadataIntegrity(metadata);
+      if (!integrity.valid) {
+        logger.error('SECURITY: Metadata tampering detected', { 
+          cid, 
+          reason: integrity.reason 
+        });
+        throw new Error(`METADATA_TAMPERED: Integrity check failed for ${cid}`);
+      }
+      
+      if (integrity.reason === 'legacy_no_hash') {
+        logger.debug('Legacy metadata without integrity hash', { cid });
+      }
+      
+      return metadata;
     } catch (error: any) {
       if (error.code === 'ENOENT') {
         throw new BlobNotFoundError(cid);
@@ -198,6 +289,7 @@ export class StorageService {
 
   /**
    * Update metadata
+   * SECURITY: Regenerates integrity hash if critical fields change
    */
   async updateMetadata(cid: string, updates: Partial<BlobMetadata>): Promise<void> {
     await this.ensureInitialized();
@@ -207,6 +299,18 @@ export class StorageService {
     try {
       const metadata = await this.getMetadata(cid);
       const updated = { ...metadata, ...updates };
+      
+      // SECURITY: Regenerate integrity hash if critical fields changed
+      if ('pinned' in updates || 'size' in updates || 'mimeType' in updates) {
+        updated.integrityHash = generateMetadataIntegrityHash(
+          updated.cid,
+          updated.size,
+          updated.mimeType,
+          updated.createdAt,
+          updated.pinned || false
+        );
+      }
+      
       await fs.writeFile(metaPath, JSON.stringify(updated, null, 2));
     } catch (error) {
       logger.error('Failed to update metadata', error, { cid });
