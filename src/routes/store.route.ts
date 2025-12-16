@@ -23,6 +23,7 @@ import {
   AuthorizedStoreResponse,
   StorageAuthorization
 } from '../types/index.js';
+import { normalizeContentType, extractGuildId } from '../middleware/content-filter.middleware.js';
 
 /**
  * Validate the authorization object structure
@@ -147,8 +148,15 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Store blob locally
-    await storageService.storeBlob(cid, ciphertextBuffer, mimeType);
+    // Extract content type and guild ID for policy tracking
+    const contentType = normalizeContentType(authorization.type) || undefined;
+    const guildId = extractGuildId(authorization) || undefined;
+
+    // Store blob locally with content metadata
+    await storageService.storeBlob(cid, ciphertextBuffer, mimeType, {
+      contentType,
+      guildId
+    });
 
     // Replicate to peers (async, don't wait)
     const replicationPromise = replicationService

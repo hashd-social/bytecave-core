@@ -3,7 +3,7 @@
  */
 
 import dotenv from 'dotenv';
-import { Config } from '../types/index.js';
+import { Config, ContentType, ContentFilterConfig } from '../types/index.js';
 
 dotenv.config();
 
@@ -46,6 +46,76 @@ function getEnvArray(key: string, defaultValue: string[] = []): string[] {
   return value.split(',').map(v => v.trim()).filter(v => v.length > 0);
 }
 
+/**
+ * Load guild filter configuration from config/guilds.json
+ */
+function loadGuildConfig(): { allowedGuilds: 'all' | string[]; blockedGuilds: string[] } {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const configPath = path.join(__dirname, '../../config/guilds.json');
+    const data = fs.readFileSync(configPath, 'utf8');
+    const config = JSON.parse(data);
+    
+    // Validate and normalize allowedGuilds
+    let allowedGuilds: 'all' | string[];
+    if (config.allowedGuilds === 'all' || !config.allowedGuilds) {
+      allowedGuilds = 'all';
+    } else if (Array.isArray(config.allowedGuilds)) {
+      allowedGuilds = config.allowedGuilds.map((g: any) => String(g));
+      if (allowedGuilds.length === 0) {
+        allowedGuilds = 'all';
+      }
+    } else {
+      allowedGuilds = 'all';
+    }
+    
+    // Validate and normalize blockedGuilds
+    const blockedGuilds = Array.isArray(config.blockedGuilds) 
+      ? config.blockedGuilds.map((g: any) => String(g))
+      : [];
+    
+    return { allowedGuilds, blockedGuilds };
+  } catch (error) {
+    console.warn('⚠️ Could not load config/guilds.json, using defaults (all guilds allowed)');
+    return { allowedGuilds: 'all', blockedGuilds: [] };
+  }
+}
+
+/**
+ * Parse content filter configuration
+ * 
+ * CONTENT_TYPES (env): Comma-separated list of content types to accept
+ *   - 'all' = accept everything (default)
+ *   - 'messages,posts,media,listings' = accept specific types
+ * 
+ * Guild filtering is loaded from config/guilds.json:
+ *   - allowedGuilds: 'all' or array of guild IDs
+ *   - blockedGuilds: array of guild IDs to block (takes precedence)
+ */
+function parseContentFilter(): ContentFilterConfig {
+  const typesEnv = process.env.CONTENT_TYPES?.toLowerCase().trim();
+  
+  // Parse content types from env
+  let types: 'all' | ContentType[];
+  if (!typesEnv || typesEnv === 'all') {
+    types = 'all';
+  } else {
+    const validTypes: ContentType[] = ['messages', 'posts', 'media', 'listings'];
+    const parsed = typesEnv.split(',').map(t => t.trim()) as ContentType[];
+    types = parsed.filter(t => validTypes.includes(t));
+    if (types.length === 0) {
+      console.warn('⚠️ No valid CONTENT_TYPES specified, defaulting to "all"');
+      types = 'all';
+    }
+  }
+  
+  // Load guild config from JSON file
+  const { allowedGuilds, blockedGuilds } = loadGuildConfig();
+  
+  return { types, allowedGuilds, blockedGuilds };
+}
+
 export const config: Config = {
   // Node identification
   nodeEnv: process.env.NODE_ENV || 'development',
@@ -59,6 +129,9 @@ export const config: Config = {
   nodeShards: process.env.NODE_SHARDS 
     ? JSON.parse(process.env.NODE_SHARDS)
     : [{ start: 0, end: 1023 }],
+
+  // Content type filtering
+  contentFilter: parseContentFilter(),
 
   // Garbage collection configuration (Requirement 8)
   gcEnabled: getEnvBoolean('GC_ENABLED', true),
@@ -78,8 +151,7 @@ export const config: Config = {
   replicationEnabled: getEnvBoolean('REPLICATION_ENABLED', true),
   replicationTimeoutMs: getEnvNumber('REPLICATION_TIMEOUT_MS', 5000),
   replicationFactor: getEnvNumber('REPLICATION_FACTOR', 3),
-  enableBanlist: getEnvBoolean('ENABLE_BANLIST', true),
-  banlistSyncUrl: process.env.BANLIST_SYNC_URL,
+  enableBlockedContent: getEnvBoolean('ENABLE_BLOCKED_CONTENT', true),
   cacheSizeMB: getEnvNumber('CACHE_SIZE_MB', 50),
   compressionEnabled: getEnvBoolean('COMPRESSION_ENABLED', false),
   metricsEnabled: getEnvBoolean('METRICS_ENABLED', true),

@@ -86,6 +86,10 @@ export async function nodeInfoHandler(_req: Request, res: Response): Promise<voi
         'pinning',
         'feeds'
       ],
+      // Content type filtering
+      contentTypes: config.contentFilter.types,
+      allowedGuilds: config.contentFilter.allowedGuilds,
+      blockedGuilds: config.contentFilter.blockedGuilds,
       storageCapacity: config.gcMaxStorageMB * 1024 * 1024,
       storageUsed: stats.totalSize,
       loadFactor: Math.min(1, loadFactor),

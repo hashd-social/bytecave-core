@@ -10,7 +10,7 @@ import helmet from 'helmet';
 import { config, validateConfig } from './config/index.js';
 import { logger } from './utils/logger.js';
 import { storageService } from './services/storage.service.js';
-import { banlistService } from './services/banlist.service.js';
+import { blockedContentService } from './services/blocked-content.service.js';
 import { replicationService } from './services/replication.service.js';
 import { replicationManager } from './services/replication-manager.service.js';
 import { proofService } from './services/proof.service.js';
@@ -41,6 +41,7 @@ import {
 } from './routes/replication-status.route.js';
 import { shardsHandler } from './routes/shards.route.js';
 import { validateShardAssignment, validateShardForProof } from './middleware/shard-validation.middleware.js';
+import { validateContentFilter } from './middleware/content-filter.middleware.js';
 import { gcStatusHandler, triggerGCHandler, forcePurgeHandler, deleteBlobHandler } from './routes/gc.route.js';
 import { 
   pinBlobHandler, 
@@ -133,9 +134,9 @@ app.disable('x-powered-by');
  * Routes with Rate Limiting
  */
 
-// Storage endpoints with shard validation (R7.5)
-app.post('/store', storageLimiter, validateShardAssignment, storeHandler);
-app.post('/replicate', replicationLimiter, validateShardAssignment, replicateHandler);
+// Storage endpoints with shard validation (R7.5) and content type filtering
+app.post('/store', storageLimiter, validateContentFilter, validateShardAssignment, storeHandler);
+app.post('/replicate', replicationLimiter, validateContentFilter, validateShardAssignment, replicateHandler);
 
 // Read endpoints
 app.get('/blob/:cid', readLimiter, blobHandler);
@@ -247,7 +248,7 @@ async function initialize(): Promise<void> {
 
     // Initialize services
     await storageService.initialize();
-    await banlistService.initialize();
+    await blockedContentService.initialize();
     await replicationService.initialize();
     await replicationManager.initialize();
     await proofService.initialize();
@@ -415,7 +416,7 @@ async function start(): Promise<void> {
       logger.info(`   Max blob size: ${config.maxBlobSizeMB}MB`);
       logger.info(`   Max storage: ${config.maxStorageGB}GB`);
       logger.info(`   Replication: ${config.replicationEnabled ? 'enabled' : 'disabled'}`);
-      logger.info(`   Banlist: ${config.enableBanlist ? 'enabled' : 'disabled'}`);
+      logger.info(`   Blocked content: ${config.enableBlockedContent ? 'enabled' : 'disabled'}`);
       logger.info('✅ Server ready for requests');
     });
 

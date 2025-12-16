@@ -43,7 +43,8 @@ export class ReplicationService {
   async replicateToAll(
     cid: string,
     ciphertext: Buffer,
-    mimeType: string
+    mimeType: string,
+    options?: { contentType?: string; guildId?: string }
   ): Promise<string[]> {
     if (!config.replicationEnabled || this.peers.length === 0) {
       return [];
@@ -66,7 +67,7 @@ export class ReplicationService {
 
     const results = await Promise.allSettled(
       enabledPeers.map(peer => 
-        this.replicateToPeer(peer, cid, ciphertext, mimeType)
+        this.replicateToPeer(peer, cid, ciphertext, mimeType, options)
       )
     );
 
@@ -99,7 +100,8 @@ export class ReplicationService {
     peer: Peer,
     cid: string,
     ciphertext: Buffer,
-    mimeType: string
+    mimeType: string,
+    options?: { contentType?: string; guildId?: string }
   ): Promise<boolean> {
     const startTime = Date.now();
 
@@ -108,7 +110,9 @@ export class ReplicationService {
         cid,
         ciphertext: ciphertext.toString('base64'),
         mimeType,
-        fromPeer: config.nodeUrl
+        fromPeer: config.nodeUrl,
+        contentType: options?.contentType,
+        guildId: options?.guildId
       };
 
       const controller = new AbortController();

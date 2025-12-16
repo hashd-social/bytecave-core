@@ -5,7 +5,7 @@
 
 import { Request, Response } from 'express';
 import { storageService } from '../services/storage.service.js';
-import { banlistService } from '../services/banlist.service.js';
+import { blockedContentService } from '../services/blocked-content.service.js';
 import { metricsService } from '../services/metrics.service.js';
 import { logger } from '../utils/logger.js';
 import { validateCIDParam } from '../utils/validation.js';
@@ -23,9 +23,9 @@ export async function blobHandler(req: Request, res: Response): Promise<void> {
 
     logger.debug('Blob request received', { cid });
 
-    // Check banlist
-    const isBanned = await banlistService.isBanned(cid);
-    if (isBanned) {
+    // Check blocked content
+    const isBlocked = await blockedContentService.isBlocked(cid);
+    if (isBlocked) {
       throw new BlobBannedError(cid);
     }
 

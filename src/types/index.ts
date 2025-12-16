@@ -10,6 +10,10 @@ export interface BlobMetadata {
   version: number; // Schema version, starting at 1
   pinned?: boolean; // Never delete if true (Requirement 9)
   integrityHash?: string; // HMAC of critical fields to detect tampering
+  // Content type for policy enforcement (messages, posts, media, listings)
+  contentType?: string;
+  // Guild ID for guild-specific filtering
+  guildId?: string;
   replication?: {
     fromPeer?: string;
     replicatedAt?: number;
@@ -47,6 +51,9 @@ export interface ReplicateRequest {
   ciphertext: string;
   mimeType: string;
   fromPeer: string;
+  // Content policy metadata (passed from original store)
+  contentType?: string;
+  guildId?: string;
 }
 
 export interface ReplicateResponse {
@@ -96,14 +103,26 @@ export interface PeerConfig {
   replicationTimeout: number;
 }
 
-export interface Banlist {
+// Blocked content - CIDs this node operator chooses not to store/serve
+export interface BlockedContent {
   version: number;
   updatedAt: number;
   cids: string[];
-  tagIDs: string[];
-  userIDs: string[];
-  reason?: string;
-  authority?: string;
+}
+
+// Content types that nodes can choose to store
+export type ContentType = 'messages' | 'posts' | 'media' | 'listings';
+
+// Content filter configuration
+export interface ContentFilterConfig {
+  // Which content types to accept ('all' or array of types)
+  types: 'all' | ContentType[];
+  // Allowlist: only accept content for these guild/group IDs (token IDs)
+  // 'all' = accept all guilds (default)
+  allowedGuilds: 'all' | string[];
+  // Blocklist: reject content for these guild/group IDs
+  // Takes precedence over allowedGuilds
+  blockedGuilds: string[];
 }
 
 export interface Config {
@@ -113,6 +132,8 @@ export interface Config {
   nodeUrl: string;
   shardCount: number;
   nodeShards: number[] | ShardRange[];
+  // Content type filtering
+  contentFilter: ContentFilterConfig;
   gcEnabled: boolean;
   gcRetentionMode: RetentionMode;
   gcMaxStorageMB: number;
@@ -128,8 +149,7 @@ export interface Config {
   replicationEnabled: boolean;
   replicationTimeoutMs: number;
   replicationFactor: number;
-  enableBanlist: boolean;
-  banlistSyncUrl?: string;
+  enableBlockedContent: boolean;
   cacheSizeMB: number;
   compressionEnabled: boolean;
   metricsEnabled: boolean;
@@ -419,6 +439,10 @@ export interface NodeMetadata {
   versionCompliant: boolean; // True if version >= minVersion
   versionBehind: boolean; // True if version < minVersion
   features: string[];
+  // Content type filtering
+  contentTypes: 'all' | ContentType[]; // What content types this node accepts
+  allowedGuilds: 'all' | string[]; // 'all' or specific guild IDs
+  blockedGuilds: string[]; // Guild IDs that are blocked
   storageCapacity: number;
   storageUsed: number;
   loadFactor: number; // 0-1

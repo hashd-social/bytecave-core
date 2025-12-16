@@ -120,7 +120,11 @@ export class StorageService {
     cid: string,
     ciphertext: Buffer,
     mimeType: string,
-    replicationMeta?: { fromPeer: string }
+    options?: { 
+      fromPeer?: string;
+      contentType?: string;
+      guildId?: string;
+    }
   ): Promise<void> {
     await this.ensureInitialized();
     await this.checkStorageCapacity();
@@ -148,11 +152,14 @@ export class StorageService {
         size: ciphertext.length,
         mimeType,
         createdAt,
-        version: 2, // Schema version (2 = with integrity hash)
+        version: 3, // Schema version (3 = with content type)
         // SECURITY: Generate integrity hash to detect metadata tampering
         integrityHash: generateMetadataIntegrityHash(cid, ciphertext.length, mimeType, createdAt, false),
-        replication: replicationMeta ? {
-          fromPeer: replicationMeta.fromPeer,
+        // Content policy tracking
+        contentType: options?.contentType,
+        guildId: options?.guildId,
+        replication: options?.fromPeer ? {
+          fromPeer: options.fromPeer,
           replicatedAt: Date.now(),
           replicatedTo: []
         } : {
