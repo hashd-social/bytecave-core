@@ -58,6 +58,7 @@ import {
   resolveFeedForksHandler
 } from './routes/feed.route.js';
 import { nodeInfoHandler } from './routes/node-info.route.js';
+import { networkStatsHandler } from './routes/network-stats.route.js';
 import { contractIntegrationService } from './services/contract-integration.service.js';
 import { ethers } from 'ethers';
 import {
@@ -192,6 +193,9 @@ app.get('/feed/:feedId/forks', readLimiter, resolveFeedForksHandler);
 
 // Node discovery endpoint (Requirement 11)
 app.get('/node/info', readLimiter, nodeInfoHandler);
+
+// Network stats endpoint (for frontend node selection)
+app.get('/network/stats', readLimiter, networkStatsHandler);
 
 // Root endpoint
 app.get('/', (_req, res) => {

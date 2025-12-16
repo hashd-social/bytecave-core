@@ -21,9 +21,12 @@ const NODE_REGISTRY_ABI = [
   'function registerNode(bytes publicKey, string url, bytes32 metadataHash) returns (bytes32)',
   'function updateNode(string url, bytes32 metadataHash)',
   'function unregisterNode()',
+  'function minVersion() view returns (string)',
+  'function setMinVersion(string version)',
   'event NodeRegistered(bytes32 indexed nodeId, address indexed owner)',
   'event NodeUpdated(bytes32 indexed nodeId)',
-  'event NodeUnregistered(bytes32 indexed nodeId)'
+  'event NodeUnregistered(bytes32 indexed nodeId)',
+  'event MinVersionUpdated(string version)'
 ];
 
 const INCENTIVES_ABI = [
@@ -201,6 +204,29 @@ export class ContractIntegrationService {
     } catch (error: any) {
       logger.error('Failed to check node active status', { nodeId, error: error.message });
       return false;
+    }
+  }
+
+  /**
+   * Get minimum required version from contract
+   * Returns null if contract is not available or doesn't have minVersion set
+   */
+  async getMinVersion(): Promise<string | null> {
+    if (!this.nodeRegistry) {
+      logger.warn('Registry not initialized, cannot check min version');
+      return null;
+    }
+
+    try {
+      const version = await this.nodeRegistry.minVersion();
+      // Empty string means not set
+      if (!version || version === '') {
+        return null;
+      }
+      return version;
+    } catch (error: any) {
+      logger.warn('Failed to get min version from contract', { error: error.message });
+      return null;
     }
   }
 

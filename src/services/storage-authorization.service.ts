@@ -316,33 +316,30 @@ export class StorageAuthorizationService {
       };
     }
 
-    // Verify sender is in participants list
-    const senderLower = authorization.sender.toLowerCase();
-    const isParticipant = authorization.participants.some(
-      p => p.toLowerCase() === senderLower
-    );
-
-    if (!isParticipant) {
-      return {
-        authorized: false,
-        error: 'Sender is not in participants list',
-        details: {
-          sender: authorization.sender,
-          participants: authorization.participants
-        }
-      };
-    }
-
     // Verify threadId matches sorted participants hash
+    // Frontend can use either wallet addresses OR public keys for threadId
+    // Public keys are longer than 42 chars (addresses are 42 with 0x prefix)
     const sortedParticipants = [...authorization.participants]
       .map(p => p.toLowerCase())
       .sort();
-    const expectedThreadId = ethers.keccak256(
-      ethers.AbiCoder.defaultAbiCoder().encode(
+    
+    // Detect if participants are public keys or addresses
+    const isPublicKey = sortedParticipants[0].length > 42;
+    
+    let expectedThreadId: string;
+    if (isPublicKey) {
+      // Public keys use string encoding (matches frontend)
+      expectedThreadId = ethers.solidityPackedKeccak256(
+        ['string', 'string'],
+        sortedParticipants
+      );
+    } else {
+      // Wallet addresses use address[] encoding
+      expectedThreadId = ethers.solidityPackedKeccak256(
         ['address[]'],
         [sortedParticipants]
-      )
-    );
+      );
+    }
 
     if (authorization.threadId.toLowerCase() !== expectedThreadId.toLowerCase()) {
       return {
@@ -350,7 +347,8 @@ export class StorageAuthorizationService {
         error: 'threadId does not match participants hash',
         details: {
           provided: authorization.threadId,
-          expected: expectedThreadId
+          expected: expectedThreadId,
+          participantsType: isPublicKey ? 'publicKeys' : 'addresses'
         }
       };
     }

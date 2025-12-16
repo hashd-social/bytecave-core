@@ -81,10 +81,13 @@ export interface HealthResponse {
 
 export interface Peer {
   url: string;
+  nodeId?: string;
+  publicKey?: string;
   priority: number;
   enabled: boolean;
   lastHealthCheck?: number;
   healthy?: boolean;
+  latency?: number;
 }
 
 export interface PeerConfig {
@@ -412,6 +415,9 @@ export interface NodeRegistryEntry {
 export interface NodeMetadata {
   nodeId: string;
   version: string;
+  minVersion: string; // Minimum required version from contract
+  versionCompliant: boolean; // True if version >= minVersion
+  versionBehind: boolean; // True if version < minVersion
   features: string[];
   storageCapacity: number;
   storageUsed: number;
