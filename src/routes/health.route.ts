@@ -10,6 +10,8 @@ import { config } from '../config/index.js';
 import { storageService } from '../services/storage.service.js';
 import { replicationService } from '../services/replication.service.js';
 import { metricsService } from '../services/metrics.service.js';
+import { p2pService } from '../services/p2p.service.js';
+import { proofService } from '../services/proof.service.js';
 import { logger } from '../utils/logger.js';
 import { verifyCID, verifyMetadataIntegrity } from '../utils/cid.js';
 import { HealthResponse, BlobMetadata } from '../types/index.js';
@@ -152,6 +154,14 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       status = 'unhealthy';
     }
 
+    // Get public key for contract registration
+    let publicKey: string | undefined;
+    try {
+      publicKey = proofService.getPublicKey();
+    } catch {
+      // Keys not initialized yet
+    }
+
     const response: HealthResponse = {
       status,
       uptime,
@@ -160,6 +170,9 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       latencyMs: metrics.avgLatency,
       version: VERSION,
       peers: peerCount,
+      peerId: p2pService.isStarted() ? (p2pService.getPeerId() ?? undefined) : undefined,
+      publicKey,
+      ownerAddress: process.env.OWNER_ADDRESS || undefined,
       lastReplication: 0, // TODO: Track last replication time
       metrics: {
         requestsLastHour: metrics.requestsLastHour,
@@ -179,5 +192,32 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       message: error.message,
       timestamp: Date.now()
     });
+  }
+}
+
+/**
+ * GET /peers - Get list of known peers with their HTTP endpoints
+ * Used for network discovery from dashboard
+ */
+export async function getPeers(req: Request, res: Response): Promise<void> {
+  try {
+    const knownPeers = p2pService.getKnownPeers();
+    const connectedPeerIds = p2pService.getConnectedPeers();
+    
+    const peers = knownPeers.map(peer => ({
+      peerId: peer.peerId,
+      httpEndpoint: peer.httpEndpoint,
+      connected: connectedPeerIds.includes(peer.peerId),
+      lastSeen: peer.lastSeen,
+      reputation: peer.reputation
+    }));
+
+    res.json({
+      count: peers.length,
+      peers
+    });
+  } catch (error: any) {
+    logger.error('Failed to get peers', error);
+    res.status(500).json({ error: 'Failed to get peers' });
   }
 }

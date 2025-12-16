@@ -60,6 +60,7 @@ import {
 } from './routes/feed.route.js';
 import { nodeInfoHandler } from './routes/node-info.route.js';
 import { networkStatsHandler } from './routes/network-stats.route.js';
+import { getPeers } from './routes/health.route.js';
 import { contractIntegrationService } from './services/contract-integration.service.js';
 import { ethers } from 'ethers';
 import {
@@ -76,6 +77,7 @@ import {
   requestTimeoutMiddleware
 } from './middleware/security.middleware.js';
 import { storageAuthorizationService } from './services/storage-authorization.service.js';
+import { p2pService } from './services/p2p.service.js';
 
 const app = express();
 
@@ -142,6 +144,7 @@ app.post('/replicate', replicationLimiter, validateContentFilter, validateShardA
 app.get('/blob/:cid', readLimiter, blobHandler);
 app.get('/blobs', readLimiter, listHandler);
 app.get('/health', generalLimiter, healthHandler);
+app.get('/peers', generalLimiter, getPeers);
 app.get('/status', generalLimiter, statusHandler);
 
 // Proof endpoints with shard validation (Requirement 4, R7.8)
@@ -256,10 +259,44 @@ async function initialize(): Promise<void> {
     await gcService.initialize();
     await feedService.initialize();
 
+    // Initialize P2P service
+    await initializeP2P();
+
     logger.info('Services initialized');
   } catch (error) {
     logger.error('Initialization failed', error);
     process.exit(1);
+  }
+}
+
+/**
+ * Initialize P2P discovery service
+ */
+async function initializeP2P(): Promise<void> {
+  if (!config.p2pEnabled) {
+    logger.info('P2P discovery disabled');
+    return;
+  }
+
+  try {
+    await p2pService.start({
+      enableP2P: config.p2pEnabled,
+      listenAddresses: config.p2pListenAddresses,
+      bootstrapPeers: config.p2pBootstrapPeers,
+      enableDHT: config.p2pEnableDHT,
+      enableMDNS: config.p2pEnableMDNS,
+      enableRelay: config.p2pEnableRelay
+    });
+
+    const peerId = p2pService.getPeerId();
+    const addrs = p2pService.getMultiaddrs();
+    
+    logger.info(`P2P node started: ${peerId}`);
+    logger.info(`P2P addresses: ${addrs.join(', ')}`);
+  } catch (error) {
+    logger.error('Failed to start P2P service', error);
+    // Don't fail startup - P2P is optional, HTTP still works
+    logger.warn('Continuing without P2P discovery');
   }
 }
 
@@ -372,11 +409,17 @@ async function initializeStorageAuthorization(): Promise<void> {
  */
 
 function setupGracefulShutdown(server: any): void {
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     logger.info(`Received ${signal}, shutting down gracefully...`);
 
     // Stop GC service
     gcService.stop();
+
+    // Stop P2P service
+    if (p2pService.isStarted()) {
+      await p2pService.stop();
+      logger.info('P2P service stopped');
+    }
 
     server.close(() => {
       logger.info('HTTP server closed');
@@ -417,6 +460,10 @@ async function start(): Promise<void> {
       logger.info(`   Max storage: ${config.maxStorageGB}GB`);
       logger.info(`   Replication: ${config.replicationEnabled ? 'enabled' : 'disabled'}`);
       logger.info(`   Blocked content: ${config.enableBlockedContent ? 'enabled' : 'disabled'}`);
+      logger.info(`   P2P Discovery: ${config.p2pEnabled ? 'enabled' : 'disabled'}`);
+      if (config.p2pEnabled && p2pService.isStarted()) {
+        logger.info(`   P2P Peer ID: ${p2pService.getPeerId()}`);
+      }
       logger.info('✅ Server ready for requests');
     });
 

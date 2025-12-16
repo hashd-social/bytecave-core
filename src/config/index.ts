@@ -123,6 +123,14 @@ export const config: Config = {
   port: parseInt(process.env.PORT || '3004'),
   nodeUrl: process.env.NODE_URL || 'http://localhost:3004',
 
+  // P2P Configuration
+  p2pEnabled: getEnvBoolean('P2P_ENABLED', true),
+  p2pListenAddresses: getEnvArray('P2P_LISTEN_ADDRESSES', ['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/tcp/4002/ws']),
+  p2pBootstrapPeers: getEnvArray('P2P_BOOTSTRAP_PEERS', []),
+  p2pEnableDHT: getEnvBoolean('P2P_ENABLE_DHT', true),
+  p2pEnableMDNS: getEnvBoolean('P2P_ENABLE_MDNS', true),
+  p2pEnableRelay: getEnvBoolean('P2P_ENABLE_RELAY', true),
+
   // Sharding configuration (Requirement 7)
   shardCount: parseInt(process.env.SHARD_COUNT || '1024'),
   // Default: responsible for all shards (single-node mode) - use range format
