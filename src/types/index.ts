@@ -70,6 +70,10 @@ export interface HealthResponse {
   latencyMs: number;
   version: string;
   peers: number;
+  peerId?: string;
+  multiaddrs?: string[];
+  publicKey?: string;
+  ownerAddress?: string;
   lastReplication: number;
   metrics: {
     requestsLastHour: number;
@@ -130,6 +134,13 @@ export interface Config {
   nodeId: string;
   port: number;
   nodeUrl: string;
+  // P2P Configuration
+  p2pEnabled: boolean;
+  p2pListenAddresses: string[];
+  p2pBootstrapPeers: string[];
+  p2pEnableDHT: boolean;
+  p2pEnableMDNS: boolean;
+  p2pEnableRelay: boolean;
   shardCount: number;
   nodeShards: number[] | ShardRange[];
   // Content type filtering

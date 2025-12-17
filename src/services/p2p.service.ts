@@ -8,6 +8,7 @@
 import { createLibp2p, Libp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
+import { webRTC } from '@libp2p/webrtc';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { kadDHT } from '@libp2p/kad-dht';
@@ -17,7 +18,8 @@ import { bootstrap } from '@libp2p/bootstrap';
 import { mdns } from '@libp2p/mdns';
 import { circuitRelayTransport, circuitRelayServer } from '@libp2p/circuit-relay-v2';
 import { dcutr } from '@libp2p/dcutr';
-import { pipe } from 'it-pipe';
+// pipe imported for future protocol handlers
+// import { pipe } from 'it-pipe';
 import { fromString, toString } from 'uint8arrays';
 import { multiaddr } from '@multiformats/multiaddr';
 import { EventEmitter } from 'events';
@@ -25,6 +27,7 @@ import { logger } from '../utils/logger.js';
 import { config } from '../config/index.js';
 
 const ANNOUNCE_TOPIC = 'bytecave-announce';
+const SIGNALING_TOPIC_PREFIX = 'bytecave-signaling-';
 const ANNOUNCE_INTERVAL = 60000; // 1 minute
 
 export interface P2PPeerInfo {
@@ -93,7 +96,12 @@ class P2PService extends EventEmitter {
         }));
       }
 
-      const transports = [tcp(), webSockets()];
+      const transports: any[] = [
+        tcp(),
+        webSockets(),
+        webRTC()
+        // webRTCDirect requires additional datastore config, added in Phase 2
+      ];
       
       if (p2pConfig.enableRelay) {
         transports.push(circuitRelayTransport());
@@ -106,7 +114,7 @@ class P2PService extends EventEmitter {
           listen: p2pConfig.listenAddresses
         },
         transports,
-        connectionEncryption: [noise()],
+        connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
         services,
         peerDiscovery: peerDiscovery.length > 0 ? peerDiscovery : undefined
@@ -208,17 +216,80 @@ class P2PService extends EventEmitter {
     // Subscribe to announcement topic
     pubsub.subscribe(ANNOUNCE_TOPIC);
 
-    pubsub.addEventListener('message', (event: any) => {
-      if (event.detail.topic !== ANNOUNCE_TOPIC) return;
+    // Subscribe to our own signaling topic for WebRTC offers from browsers
+    const mySignalingTopic = `${SIGNALING_TOPIC_PREFIX}${this.node.peerId.toString()}`;
+    pubsub.subscribe(mySignalingTopic);
+    logger.info('Subscribed to signaling topic', { topic: mySignalingTopic });
 
-      try {
-        const data = toString(event.detail.data);
-        const announcement = JSON.parse(data);
-        this.handleAnnouncement(announcement);
-      } catch (error) {
-        logger.warn('Failed to parse announcement', { error });
+    pubsub.addEventListener('message', (event: any) => {
+      const topic = event.detail.topic;
+      
+      // Handle announcements
+      if (topic === ANNOUNCE_TOPIC) {
+        try {
+          const data = toString(event.detail.data);
+          const announcement = JSON.parse(data);
+          this.handleAnnouncement(announcement);
+        } catch (error) {
+          logger.warn('Failed to parse announcement', { error });
+        }
+        return;
+      }
+
+      // Handle signaling messages (WebRTC offers from browsers)
+      if (topic === mySignalingTopic) {
+        try {
+          const data = toString(event.detail.data);
+          const signal = JSON.parse(data);
+          this.handleSignalingMessage(signal);
+        } catch (error) {
+          logger.warn('Failed to parse signaling message', { error });
+        }
+        return;
       }
     });
+  }
+
+  private async handleSignalingMessage(signal: {
+    type: 'offer' | 'answer' | 'ice-candidate';
+    from: string;
+    sdp?: string;
+    candidate?: { candidate: string; sdpMid?: string; sdpMLineIndex?: number };
+  }): Promise<void> {
+    logger.info('Received signaling message', { type: signal.type, from: signal.from });
+    
+    // Emit event for external handling (e.g., by a WebRTC manager)
+    this.emit('signaling', signal);
+    
+    // For now, just log - actual WebRTC handling will be added when browser client is ready
+    // The browser will send SDP offers, and we'll respond with answers
+  }
+
+  /**
+   * Send a signaling message to a specific peer (for WebRTC negotiation)
+   */
+  async sendSignalingMessage(targetPeerId: string, signal: {
+    type: 'offer' | 'answer' | 'ice-candidate';
+    sdp?: string;
+    candidate?: { candidate: string; sdpMid?: string; sdpMLineIndex?: number };
+  }): Promise<void> {
+    if (!this.node) return;
+
+    const pubsub = this.node.services.pubsub as any;
+    if (!pubsub) return;
+
+    const targetTopic = `${SIGNALING_TOPIC_PREFIX}${targetPeerId}`;
+    const message = {
+      ...signal,
+      from: this.node.peerId.toString()
+    };
+
+    try {
+      await pubsub.publish(targetTopic, fromString(JSON.stringify(message)));
+      logger.debug('Sent signaling message', { targetPeerId, type: signal.type });
+    } catch (error) {
+      logger.warn('Failed to send signaling message', { targetPeerId, error });
+    }
   }
 
   private handleAnnouncement(announcement: {
@@ -269,7 +340,7 @@ class P2PService extends EventEmitter {
       const announcement = {
         peerId: this.node.peerId.toString(),
         httpEndpoint: config.nodeUrl,
-        contentTypes: config.contentTypes || 'all',
+        contentTypes: config.contentFilter.types || 'all',
         availableStorage: config.gcMaxStorageMB * 1024 * 1024,
         blobCount: 0, // Will be updated by storage service
         timestamp: Date.now()
@@ -347,7 +418,7 @@ class P2PService extends EventEmitter {
   /**
    * Update announcement with current storage stats
    */
-  updateStorageStats(blobCount: number, storageUsed: number): void {
+  updateStorageStats(_blobCount: number, _storageUsed: number): void {
     // This will be included in the next announcement
     // For now, just trigger an immediate announcement
     this.announce();

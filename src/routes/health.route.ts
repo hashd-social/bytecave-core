@@ -162,6 +162,12 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       // Keys not initialized yet
     }
 
+    // Get multiaddrs for P2P connectivity
+    let multiaddrs: string[] | undefined;
+    if (p2pService.isStarted()) {
+      multiaddrs = p2pService.getMultiaddrs();
+    }
+
     const response: HealthResponse = {
       status,
       uptime,
@@ -171,6 +177,7 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       version: VERSION,
       peers: peerCount,
       peerId: p2pService.isStarted() ? (p2pService.getPeerId() ?? undefined) : undefined,
+      multiaddrs,
       publicKey,
       ownerAddress: process.env.OWNER_ADDRESS || undefined,
       lastReplication: 0, // TODO: Track last replication time
@@ -199,7 +206,7 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
  * GET /peers - Get list of known peers with their HTTP endpoints
  * Used for network discovery from dashboard
  */
-export async function getPeers(req: Request, res: Response): Promise<void> {
+export async function getPeers(_req: Request, res: Response): Promise<void> {
   try {
     const knownPeers = p2pService.getKnownPeers();
     const connectedPeerIds = p2pService.getConnectedPeers();
