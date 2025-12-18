@@ -69,7 +69,12 @@ export interface HealthResponse {
   totalSize: number;
   latencyMs: number;
   version: string;
-  peers: number;
+  peers: number; // Legacy: replication peers count
+  p2p: {
+    connected: number;    // Total P2P connections
+    replicating: number;  // Peers available for replication
+    relay: number;        // Connections via relay
+  };
   peerId?: string;
   multiaddrs?: string[];
   publicKey?: string;

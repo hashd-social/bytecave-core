@@ -145,7 +145,11 @@ class P2PService extends EventEmitter {
         connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
         services,
-        peerDiscovery: peerDiscovery.length > 0 ? peerDiscovery : undefined
+        peerDiscovery: peerDiscovery.length > 0 ? peerDiscovery : undefined,
+        connectionManager: {
+          maxConnections: 100,
+          dialTimeout: 30000 // 30s timeout for dials (gives DCUTR time to work)
+        }
       });
 
       // Set up event listeners
@@ -217,7 +221,20 @@ class P2PService extends EventEmitter {
 
     this.node.addEventListener('peer:connect', (event) => {
       const peerId = event.detail.toString();
-      logger.info('Peer connected', { peerId });
+      
+      // Log connection details including transport type
+      const connections = this.node?.getConnections(event.detail);
+      const connectionInfo = connections?.map(conn => ({
+        remoteAddr: conn.remoteAddr?.toString(),
+        transport: conn.remoteAddr?.toString().includes('/p2p-circuit/') ? 'RELAY' : 'DIRECT',
+        protocols: conn.streams.map(s => s.protocol)
+      }));
+      
+      logger.info('Peer connected', { 
+        peerId: peerId.slice(0, 16) + '...',
+        connectionCount: connections?.length || 0,
+        connections: connectionInfo
+      });
       
       // Cache this peer for future bootstrap
       const peer = this.node?.getPeers().find(p => p.toString() === peerId);
@@ -234,8 +251,27 @@ class P2PService extends EventEmitter {
 
     this.node.addEventListener('peer:disconnect', (event) => {
       const peerId = event.detail.toString();
-      logger.info('Peer disconnected', { peerId });
+      logger.info('Peer disconnected', { peerId: peerId.slice(0, 16) + '...' });
       this.emit('peer:disconnect', peerId);
+    });
+
+    // Listen for connection upgrades (DCUTR success)
+    this.node.addEventListener('connection:open', (event) => {
+      const conn = event.detail;
+      const isRelay = conn.remoteAddr?.toString().includes('/p2p-circuit/');
+      logger.info('Connection opened', {
+        peerId: conn.remotePeer.toString().slice(0, 16) + '...',
+        type: isRelay ? 'RELAY' : 'DIRECT',
+        remoteAddr: conn.remoteAddr?.toString()
+      });
+    });
+
+    this.node.addEventListener('connection:close', (event) => {
+      const conn = event.detail;
+      logger.info('Connection closed', {
+        peerId: conn.remotePeer.toString().slice(0, 16) + '...',
+        remoteAddr: conn.remoteAddr?.toString()
+      });
     });
 
     this.node.addEventListener('peer:discovery', async (event) => {

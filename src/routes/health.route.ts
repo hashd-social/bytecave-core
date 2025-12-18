@@ -168,6 +168,9 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       multiaddrs = p2pService.getMultiaddrs();
     }
 
+    // Get P2P connection details
+    const connectedPeers = p2pService.isStarted() ? p2pService.getConnectedPeers().length : 0;
+
     const response: HealthResponse = {
       status,
       uptime,
@@ -175,7 +178,12 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       totalSize: stats.totalSize,
       latencyMs: metrics.avgLatency,
       version: VERSION,
-      peers: peerCount,
+      peers: peerCount, // Legacy: replication peers for backward compatibility
+      p2p: {
+        connected: connectedPeers,      // Total P2P connections
+        replicating: peerCount,         // Peers available for replication
+        relay: 0                        // TODO: Track relay connections
+      },
       peerId: p2pService.isStarted() ? (p2pService.getPeerId() ?? undefined) : undefined,
       multiaddrs,
       publicKey,
