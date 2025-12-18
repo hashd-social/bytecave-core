@@ -48,8 +48,6 @@ P2P_ENABLE_MDNS=false
 
 # Storage Configuration
 MAX_STORAGE_GB=100
-SHARD_COUNT=1024
-NODE_SHARDS=[{"start":0,"end":1023}]  # Range of shards this node is responsible for
 
 # Contract Configuration
 OWNER_ADDRESS=0x...
