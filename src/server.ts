@@ -413,6 +413,11 @@ function setupGracefulShutdown(server: any): void {
   const shutdown = async (signal: string) => {
     logger.info(`Received ${signal}, shutting down gracefully...`);
 
+    // Stop accepting new connections immediately
+    server.close(() => {
+      logger.info('HTTP server closed');
+    });
+
     // Stop GC service
     gcService.stop();
 
@@ -422,16 +427,11 @@ function setupGracefulShutdown(server: any): void {
       logger.info('P2P service stopped');
     }
 
-    server.close(() => {
-      logger.info('HTTP server closed');
-      process.exit(0);
-    });
-
-    // Force close after 10 seconds
-    setTimeout(() => {
-      logger.error('Could not close connections in time, forcefully shutting down');
-      process.exit(1);
-    }, 10000);
+    // Destroy all active connections to free ports immediately
+    server.closeAllConnections?.();
+    
+    logger.info('Shutdown complete');
+    process.exit(0);
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
