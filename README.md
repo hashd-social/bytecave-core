@@ -1,11 +1,11 @@
 # ByteCave Core
 
-Decentralized storage node for the ByteCave network. Provides encrypted blob storage with P2P replication, sharding, and cryptographic proof generation.
+Decentralized storage node for the ByteCave network. Provides encrypted blob storage with P2P replication, content-addressed sharding, and cryptographic proof generation.
 
 ## Features
 
 - **P2P Storage** - Distributed blob storage with libp2p
-- **Sharding** - Configurable shard assignment for horizontal scaling
+- **Sharding** - Deterministic shard assignment via CID modulo for horizontal scaling
 - **Encryption** - AES-256-GCM encryption for all stored data
 - **Proof Generation** - Cryptographic proofs for storage verification
 - **Replication** - Automatic data replication across network
@@ -47,9 +47,9 @@ P2P_ENABLE_DHT=true
 P2P_ENABLE_MDNS=false
 
 # Storage Configuration
-MAX_STORAGE_MB=10240
+MAX_STORAGE_GB=100
 SHARD_COUNT=1024
-NODE_SHARDS=[{"start":0,"end":1023}]
+NODE_SHARDS=[{"start":0,"end":1023}]  # Range of shards this node is responsible for
 
 # Contract Configuration
 OWNER_ADDRESS=0x...
@@ -82,9 +82,9 @@ RPC_URL=https://...
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MAX_STORAGE_MB` | `10240` | Maximum storage in MB |
-| `SHARD_COUNT` | `1024` | Total shards in network |
-| `NODE_SHARDS` | `[{"start":0,"end":1023}]` | Shard ranges for this node |
+| `MAX_STORAGE_GB` | `100` | Maximum storage in GB |
+| `SHARD_COUNT` | `1024` | Total shards in network (power of 2 recommended) |
+| `NODE_SHARDS` | `[{"start":0,"end":1023}]` | Shard ranges this node accepts (default: all shards) |
 
 ### Blockchain
 
@@ -149,7 +149,8 @@ GET /info
   "publicKey": "0x...",
   "ownerAddress": "0x...",
   "multiaddrs": ["/ip4/..."],
-  "shards": [{"start": 0, "end": 1023}]
+  "shards": [{"start": 0, "end": 1023}],
+  "shardCount": 1024
 }
 ```
 
@@ -169,7 +170,7 @@ Node → Connects to Relay
 
 - **Circuit Relay v2** - NAT traversal
 - **Kad-DHT** - Peer discovery and routing
-- **Gossipsub** - Peer announcements
+- **Gossipsub** - Peer announcements and broadcast messages
 - **Custom Protocols**:
   - `/bytecave/store/1.0.0` - Store requests
   - `/bytecave/retrieve/1.0.0` - Retrieve requests
@@ -178,24 +179,37 @@ Node → Connects to Relay
 
 ### Sharding
 
-Nodes are assigned shard ranges to distribute storage:
+Blobs are distributed across nodes using deterministic shard assignment:
 
+**Shard Calculation:**
+```javascript
+// CID is converted to numeric value and modulo is applied
+shardKey = numericValue(cid) % SHARD_COUNT
+```
+
+**Node Responsibility:**
+Nodes declare which shard ranges they accept:
 ```json
 {
   "shardCount": 1024,
   "nodeShards": [
-    {"start": 0, "end": 255},
-    {"start": 512, "end": 767}
+    {"start": 0, "end": 255},    // Accept shards 0-255
+    {"start": 512, "end": 767}   // Accept shards 512-767
   ]
 }
 ```
 
-CIDs are hashed to determine shard assignment:
-```
-shard = hash(cid) % shardCount
-```
+**Default Behavior:**
+- Single node: `[{"start": 0, "end": 1023}]` (accepts all shards)
+- Multi-node: Each node accepts a subset of shards for load distribution
 
-Nodes only store blobs in their assigned shards.
+**Storage Decision:**
+When a blob is stored, the node:
+1. Calculates the shard key from the CID
+2. Checks if the shard key falls within its assigned ranges
+3. Accepts or rejects the blob based on shard responsibility
+
+This ensures deterministic, content-addressed distribution without coordination.
 
 ## Deployment
 
@@ -246,14 +260,15 @@ volumes:
 
 ### Production Checklist
 
-- [ ] Configure relay peers
+- [ ] Configure relay peers for NAT traversal
 - [ ] Set owner address and contract addresses
-- [ ] Configure shard assignment
-- [ ] Set max storage limit
-- [ ] Open firewall ports (5001, 5011, 5012)
-- [ ] Configure reverse proxy with SSL (optional)
+- [ ] Configure shard assignment (coordinate with other nodes)
+- [ ] Set max storage limit based on available disk space
+- [ ] Open firewall ports (5001 for HTTP, 5011-5012 for P2P)
+- [ ] Configure reverse proxy with SSL (recommended for HTTP API)
 - [ ] Set up monitoring and alerts
-- [ ] Backup private keys and data directory
+- [ ] Backup node private key and peer ID
+- [ ] Test P2P connectivity and peer discovery
 
 ## Monitoring
 
@@ -292,15 +307,15 @@ grep "Peer connected" logs/bytecave.log
 
 ```
 data/
-├── blobs/           # Encrypted blob storage
-│   └── <cid>/
-│       ├── data     # Encrypted data
-│       └── meta.json # Metadata
-├── keys/            # Cryptographic keys
-│   ├── private.key  # Node private key
-│   └── public.key   # Node public key
-└── p2p/             # P2P data
-    └── peer-id.json # Persistent peer identity
+├── blobs/              # Encrypted blob storage
+│   └── <cid>.enc       # Encrypted blob data
+├── meta/               # Blob metadata
+│   └── <cid>.json      # Metadata (size, timestamp, integrity hash)
+├── proofs/             # Storage proofs
+│   └── <cid>.json      # Cryptographic proof of storage
+├── feeds/              # Feed data (if enabled)
+├── config/             # Node configuration
+└── node-key.json       # Persistent P2P peer identity
 ```
 
 ## Development
@@ -362,9 +377,10 @@ yarn test:coverage
 
 ### Storage
 
-- Increase `MAX_STORAGE_MB` for more capacity
+- Increase `MAX_STORAGE_GB` for more capacity
 - Use SSD for better I/O performance
-- Adjust shard ranges to balance load
+- Coordinate shard ranges with other nodes to balance load
+- Monitor disk usage and adjust GC settings accordingly
 
 ### P2P
 
@@ -386,7 +402,7 @@ MIT
 
 - **bytecave-relay** - Relay node for NAT traversal
 - **bytecave-browser** - Browser client library
-- **bytecave-desktop** - Desktop application
+- **bytenode* - Desktop application
 
 ## Support
 
