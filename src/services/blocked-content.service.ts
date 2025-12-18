@@ -9,7 +9,13 @@ import fs from 'fs/promises';
 import path from 'path';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
-import { BlockedContent } from '../types/index.js';
+
+interface BlockedContent {
+  version: number;
+  updatedAt: number;
+  cids: string[];
+  peerIds: string[];
+}
 
 export class BlockedContentService {
   private blockedContent: BlockedContent | null = null;
@@ -51,6 +57,21 @@ export class BlockedContentService {
     return this.blockedContent.cids.includes(cid.toLowerCase());
   }
 
+  async isPeerBlocked(peerId: string): Promise<boolean> {
+    if (!this.blockedContent) {
+      return false;
+    }
+
+    // Reload if stale
+    if (Date.now() - this.lastLoad > this.RELOAD_INTERVAL) {
+      await this.load().catch(err => 
+        logger.warn('Failed to reload blocked content', { error: err.message })
+      );
+    }
+
+    return this.blockedContent.peerIds.includes(peerId);
+  }
+
   /**
    * Load blocked content from file
    */
@@ -87,17 +108,18 @@ export class BlockedContentService {
   /**
    * Add CID to blocked list
    */
-  async addCid(cid: string, reason?: string): Promise<void> {
+  async addCid(cid: string): Promise<void> {
     if (!this.blockedContent) {
       this.blockedContent = this.getDefault();
     }
 
-    if (!this.blockedContent.cids.includes(cid.toLowerCase())) {
-      this.blockedContent.cids.push(cid.toLowerCase());
+    const cidLower = cid.toLowerCase();
+    if (!this.blockedContent.cids.includes(cidLower)) {
+      this.blockedContent.cids.push(cidLower);
       this.blockedContent.updatedAt = Date.now();
 
       await this.save();
-      logger.info('CID added to blocked content', { cid, reason });
+      logger.info('CID added to blocked list', { cid });
     }
   }
 
@@ -107,14 +129,55 @@ export class BlockedContentService {
   async removeCid(cid: string): Promise<void> {
     if (!this.blockedContent) return;
 
-    const index = this.blockedContent.cids.indexOf(cid.toLowerCase());
+    const cidLower = cid.toLowerCase();
+    const index = this.blockedContent.cids.indexOf(cidLower);
     if (index > -1) {
       this.blockedContent.cids.splice(index, 1);
       this.blockedContent.updatedAt = Date.now();
 
       await this.save();
-      logger.info('CID removed from blocked content', { cid });
+      logger.info('CID removed from blocked list', { cid });
     }
+  }
+
+  /**
+   * Add peer to blocked list
+   */
+  async addPeer(peerId: string): Promise<void> {
+    if (!this.blockedContent) {
+      this.blockedContent = this.getDefault();
+    }
+
+    if (!this.blockedContent.peerIds.includes(peerId)) {
+      this.blockedContent.peerIds.push(peerId);
+      this.blockedContent.updatedAt = Date.now();
+
+      await this.save();
+      logger.info('Peer added to blocked list', { peerId });
+    }
+  }
+
+  /**
+   * Remove peer from blocked list
+   */
+  async removePeer(peerId: string): Promise<void> {
+    if (!this.blockedContent) return;
+
+    const index = this.blockedContent.peerIds.indexOf(peerId);
+    if (index > -1) {
+      this.blockedContent.peerIds.splice(index, 1);
+      this.blockedContent.updatedAt = Date.now();
+
+      await this.save();
+      logger.info('Peer removed from blocked list', { peerId });
+    }
+  }
+
+  /**
+   * Get all blocked content
+   */
+  getBlocked(): BlockedContent | null {
+    return this.blockedContent;
   }
 
   /**
@@ -135,7 +198,8 @@ export class BlockedContentService {
     return {
       version: 1,
       updatedAt: Date.now(),
-      cids: []
+      cids: [],
+      peerIds: []
     };
   }
 

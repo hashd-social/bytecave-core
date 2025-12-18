@@ -127,6 +127,18 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
     // Generate CID
     const cid = generateCID(ciphertextBuffer);
 
+    // Check if CID is blocked
+    const { blockedContentService } = await import('../services/blocked-content.service.js');
+    if (await blockedContentService.isBlocked(cid)) {
+      logger.warn('Storage rejected: CID is blocked', { cid, sender: authorization.sender });
+      res.status(403).json({
+        error: 'CONTENT_BLOCKED',
+        message: 'This content is blocked by node policy',
+        timestamp: Date.now()
+      });
+      return;
+    }
+
     logger.info('Authorized store request', { 
       cid, 
       size: ciphertextBuffer.length,

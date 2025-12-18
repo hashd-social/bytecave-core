@@ -1,7 +1,9 @@
 /**
  * HASHD Vault - Replication Service
  * 
- * Handles peer-to-peer blob replication using on-chain registry
+ * Handles peer-to-peer blob replication using:
+ * 1. Pure P2P via libp2p streams (preferred)
+ * 2. HTTP fallback for legacy/direct connections
  */
 
 import { config } from '../config/index.js';
@@ -10,6 +12,8 @@ import { Peer, ReplicateRequest } from '../types/index.js';
 import { contractIntegrationService } from './contract-integration.service.js';
 import { storageService } from './storage.service.js';
 import { replicationManager } from './replication-manager.service.js';
+import { p2pProtocolsService } from './p2p-protocols.service.js';
+import { p2pService } from './p2p.service.js';
 
 export class ReplicationService {
   private peers: Peer[] = [];
@@ -94,7 +98,7 @@ export class ReplicationService {
   }
 
   /**
-   * Replicate to a single peer
+   * Replicate to a single peer - tries P2P first, falls back to HTTP
    */
   async replicateToPeer(
     peer: Peer,
@@ -105,6 +109,34 @@ export class ReplicationService {
   ): Promise<boolean> {
     const startTime = Date.now();
 
+    // Try P2P replication first if peer has a peerId
+    if (peer.nodeId && p2pService.isStarted()) {
+      try {
+        const success = await p2pProtocolsService.replicateToPeer(
+          peer.nodeId,
+          cid,
+          ciphertext,
+          mimeType,
+          options
+        );
+
+        if (success) {
+          const latency = Date.now() - startTime;
+          logger.debug('P2P replication successful', {
+            peerId: peer.nodeId,
+            cid,
+            latency
+          });
+          return true;
+        }
+        // P2P failed, fall through to HTTP
+        logger.debug('P2P replication failed, trying HTTP fallback', { peerId: peer.nodeId });
+      } catch (error: any) {
+        logger.debug('P2P replication error, trying HTTP fallback', { error: error.message });
+      }
+    }
+
+    // HTTP fallback
     try {
       const request: ReplicateRequest = {
         cid,
@@ -134,7 +166,7 @@ export class ReplicationService {
       const result = await response.json() as { alreadyStored?: boolean };
       const latency = Date.now() - startTime;
 
-      logger.debug('Replication successful', {
+      logger.debug('HTTP replication successful', {
         peer: peer.url,
         cid,
         latency,
@@ -144,8 +176,9 @@ export class ReplicationService {
       return true;
     } catch (error: any) {
       const latency = Date.now() - startTime;
-      logger.warn('Replication failed', {
+      logger.warn('Replication failed (both P2P and HTTP)', {
         peer: peer.url,
+        peerId: peer.nodeId,
         cid,
         latency,
         error: error.message

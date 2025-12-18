@@ -134,10 +134,14 @@ export interface Config {
   nodeId: string;
   port: number;
   nodeUrl: string;
+  // Node identity for P2P and registration
+  publicKey: string;
+  ownerAddress: string;
   // P2P Configuration
   p2pEnabled: boolean;
   p2pListenAddresses: string[];
   p2pBootstrapPeers: string[];
+  p2pRelayPeers: string[];
   p2pEnableDHT: boolean;
   p2pEnableMDNS: boolean;
   p2pEnableRelay: boolean;

@@ -203,7 +203,7 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
 }
 
 /**
- * GET /peers - Get list of known peers with their HTTP endpoints
+ * GET /peers - Get list of CONNECTED peers only (real-time, no cache)
  * Used for network discovery from dashboard
  */
 export async function getPeers(_req: Request, res: Response): Promise<void> {
@@ -211,13 +211,17 @@ export async function getPeers(_req: Request, res: Response): Promise<void> {
     const knownPeers = p2pService.getKnownPeers();
     const connectedPeerIds = p2pService.getConnectedPeers();
     
-    const peers = knownPeers.map(peer => ({
-      peerId: peer.peerId,
-      httpEndpoint: peer.httpEndpoint,
-      connected: connectedPeerIds.includes(peer.peerId),
-      lastSeen: peer.lastSeen,
-      reputation: peer.reputation
-    }));
+    // Only return actually connected peers (real-time from libp2p)
+    const peers = knownPeers
+      .filter(peer => connectedPeerIds.includes(peer.peerId))
+      .map(peer => ({
+        peerId: peer.peerId,
+        httpEndpoint: peer.httpEndpoint,
+        contentTypes: peer.contentTypes,
+        connected: true,
+        lastSeen: peer.lastSeen,
+        reputation: peer.reputation
+      }));
 
     res.json({
       count: peers.length,

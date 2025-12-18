@@ -8,7 +8,8 @@
 import { createLibp2p, Libp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
-import { webRTC } from '@libp2p/webrtc';
+// webRTC import commented out - not needed for server-side nodes
+// import { webRTC } from '@libp2p/webrtc';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { kadDHT } from '@libp2p/kad-dht';
@@ -25,8 +26,11 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { EventEmitter } from 'events';
 import { logger } from '../utils/logger.js';
 import { config } from '../config/index.js';
+import { p2pProtocolsService } from './p2p-protocols.service.js';
+import { peerCacheService } from './peer-cache.service.js';
 
 const ANNOUNCE_TOPIC = 'bytecave-announce';
+const BROADCAST_TOPIC = 'bytecave-broadcast';
 const SIGNALING_TOPIC_PREFIX = 'bytecave-signaling-';
 const ANNOUNCE_INTERVAL = 60000; // 1 minute
 
@@ -44,6 +48,7 @@ export interface P2PConfig {
   enableP2P: boolean;
   listenAddresses: string[];
   bootstrapPeers: string[];
+  relayPeers: string[];
   enableDHT: boolean;
   enableMDNS: boolean;
   enableRelay: boolean;
@@ -55,14 +60,19 @@ class P2PService extends EventEmitter {
   private announceTimer: NodeJS.Timeout | null = null;
   private started = false;
 
-  async start(p2pConfig: P2PConfig): Promise<void> {
-    if (!p2pConfig.enableP2P) {
-      logger.info('P2P discovery disabled');
+  async start(): Promise<void> {
+    if (this.started) {
+      logger.warn('P2P service already started');
       return;
     }
 
-    if (this.started) {
-      logger.warn('P2P service already started');
+    logger.info('Starting P2P service...');
+
+    // Load cached peers
+    await peerCacheService.load();
+
+    if (!config.p2pEnabled) {
+      logger.info('P2P discovery disabled');
       return;
     }
 
@@ -75,7 +85,7 @@ class P2PService extends EventEmitter {
 
       const peerDiscovery: any[] = [];
 
-      if (p2pConfig.enableDHT) {
+      if (config.p2pEnableDHT) {
         services.dht = kadDHT({
           clientMode: false
         });
@@ -83,27 +93,45 @@ class P2PService extends EventEmitter {
 
       services.pubsub = gossipsub({
         emitSelf: false,
-        allowPublishToZeroTopicPeers: true
+        allowPublishToZeroTopicPeers: true,
+        // Gossipsub mesh parameters for better propagation
+        D: 6, // Desired number of peers in mesh
+        Dlo: 4, // Lower bound for mesh peers
+        Dhi: 12, // Upper bound for mesh peers
+        Dlazy: 6, // Number of peers for gossip (not in mesh)
+        heartbeatInterval: 1000 // Send heartbeat every 1 second
       });
 
-      if (p2pConfig.enableMDNS) {
+      if (config.p2pEnableMDNS) {
         peerDiscovery.push(mdns());
       }
 
-      if (p2pConfig.bootstrapPeers.length > 0) {
+      // Combine bootstrap, relay, and cached peers for initial discovery
+      const cachedPeers = peerCacheService.getBootstrapPeers();
+      const allBootstrapPeers = [
+        ...config.p2pBootstrapPeers,
+        ...config.p2pRelayPeers,
+        ...cachedPeers
+      ];
+
+      if (allBootstrapPeers.length > 0) {
+        logger.info('Bootstrap peers', { 
+          configured: config.p2pBootstrapPeers.length + config.p2pRelayPeers.length,
+          cached: cachedPeers.length,
+          total: allBootstrapPeers.length
+        });
         peerDiscovery.push(bootstrap({
-          list: p2pConfig.bootstrapPeers
+          list: allBootstrapPeers
         }));
       }
 
       const transports: any[] = [
         tcp(),
-        webSockets(),
-        webRTC()
-        // webRTCDirect requires additional datastore config, added in Phase 2
+        webSockets()
+        // webRTC removed - server nodes use TCP/WebSockets, browsers connect via WebSockets
       ];
       
-      if (p2pConfig.enableRelay) {
+      if (config.p2pEnableRelay) {
         transports.push(circuitRelayTransport());
         services.relay = circuitRelayServer();
         services.dcutr = dcutr();
@@ -111,7 +139,7 @@ class P2PService extends EventEmitter {
 
       this.node = await createLibp2p({
         addresses: {
-          listen: p2pConfig.listenAddresses
+          listen: config.p2pListenAddresses
         },
         transports,
         connectionEncrypters: [noise()],
@@ -129,6 +157,9 @@ class P2PService extends EventEmitter {
       // Start the node
       await this.node.start();
 
+      // Register P2P protocol handlers
+      p2pProtocolsService.registerProtocols(this.node);
+
       this.started = true;
 
       const peerId = this.node.peerId.toString();
@@ -137,9 +168,9 @@ class P2PService extends EventEmitter {
       logger.info('P2P service started', {
         peerId,
         addresses: addrs,
-        dht: p2pConfig.enableDHT,
-        mdns: p2pConfig.enableMDNS,
-        relay: p2pConfig.enableRelay
+        dht: config.p2pEnableDHT,
+        mdns: config.p2pEnableMDNS,
+        relay: config.p2pEnableRelay
       });
 
       // Start periodic announcements
@@ -153,21 +184,29 @@ class P2PService extends EventEmitter {
   }
 
   async stop(): Promise<void> {
-    if (!this.started || !this.node) {
+    if (!this.started) {
       return;
     }
 
     logger.info('Stopping P2P service...');
 
+    // Flush peer cache before stopping
+    await peerCacheService.flush();
+
+    // Stop announcements
     if (this.announceTimer) {
       clearInterval(this.announceTimer);
       this.announceTimer = null;
     }
 
-    await this.node.stop();
-    this.node = null;
+    // Unregister protocol handlers
+    if (this.node) {
+      p2pProtocolsService.unregisterProtocols();
+      await this.node.stop();
+      this.node = null;
+    }
+
     this.started = false;
-    this.knownPeers.clear();
 
     logger.info('P2P service stopped');
     this.emit('stopped');
@@ -178,7 +217,18 @@ class P2PService extends EventEmitter {
 
     this.node.addEventListener('peer:connect', (event) => {
       const peerId = event.detail.toString();
-      logger.info('Peer connected via P2P', { peerId });
+      logger.info('Peer connected', { peerId });
+      
+      // Cache this peer for future bootstrap
+      const peer = this.node?.getPeers().find(p => p.toString() === peerId);
+      if (peer) {
+        const addrs = this.node?.getConnections(peer)
+          .flatMap(conn => conn.remoteAddr ? [conn.remoteAddr.toString()] : []) || [];
+        if (addrs.length > 0) {
+          peerCacheService.addPeer(peerId, addrs);
+        }
+      }
+      
       this.emit('peer:connect', peerId);
     });
 
@@ -188,10 +238,10 @@ class P2PService extends EventEmitter {
       this.emit('peer:disconnect', peerId);
     });
 
-    this.node.addEventListener('peer:discovery', (event) => {
+    this.node.addEventListener('peer:discovery', async (event) => {
       const peerId = event.detail.id.toString();
       const addrs = event.detail.multiaddrs.map((ma: any) => ma.toString());
-      logger.debug('Peer discovered', { peerId, addresses: addrs });
+      logger.info('Peer discovered via DHT', { peerId: peerId.slice(0, 16) + '...', addressCount: addrs.length });
       
       // Update known peers
       const existing = this.knownPeers.get(peerId);
@@ -202,6 +252,16 @@ class P2PService extends EventEmitter {
         lastSeen: Date.now(),
         reputation: existing?.reputation || 100
       });
+
+      // Automatically dial discovered peers to form mesh
+      try {
+        if (this.node && addrs.length > 0) {
+          await this.node.dial(event.detail.id);
+          logger.info('Connected to discovered peer', { peerId: peerId.slice(0, 16) + '...' });
+        }
+      } catch (error: any) {
+        logger.debug('Failed to dial discovered peer', { peerId: peerId.slice(0, 16) + '...', error: error.message });
+      }
 
       this.emit('peer:discovery', { peerId, addresses: addrs });
     });
@@ -215,6 +275,10 @@ class P2PService extends EventEmitter {
 
     // Subscribe to announcement topic
     pubsub.subscribe(ANNOUNCE_TOPIC);
+
+    // Subscribe to broadcast topic for peer messages
+    pubsub.subscribe(BROADCAST_TOPIC);
+    logger.info('Subscribed to broadcast topic');
 
     // Subscribe to our own signaling topic for WebRTC offers from browsers
     const mySignalingTopic = `${SIGNALING_TOPIC_PREFIX}${this.node.peerId.toString()}`;
@@ -232,6 +296,22 @@ class P2PService extends EventEmitter {
           this.handleAnnouncement(announcement);
         } catch (error) {
           logger.warn('Failed to parse announcement', { error });
+        }
+        return;
+      }
+
+      // Handle broadcast messages
+      if (topic === BROADCAST_TOPIC) {
+        try {
+          const data = toString(event.detail.data);
+          const broadcast = JSON.parse(data);
+          this.emit('broadcast', broadcast);
+          logger.info('Received broadcast message', { 
+            from: broadcast.from?.slice(0, 16) + '...',
+            message: broadcast.message?.slice(0, 50) 
+          });
+        } catch (error) {
+          logger.warn('Failed to parse broadcast message', { error });
         }
         return;
       }
@@ -351,7 +431,10 @@ class P2PService extends EventEmitter {
         fromString(JSON.stringify(announcement))
       );
 
-      logger.debug('Published P2P announcement');
+      logger.info('Published P2P announcement', { 
+        peerId: announcement.peerId.slice(0, 16) + '...',
+        httpEndpoint: announcement.httpEndpoint 
+      });
     } catch (error) {
       logger.warn('Failed to publish announcement', { error });
     }
@@ -397,6 +480,37 @@ class P2PService extends EventEmitter {
     return Array.from(this.knownPeers.values())
       .filter(p => p.httpEndpoint)
       .map(p => p.httpEndpoint!);
+  }
+
+  /**
+   * Broadcast a message to all connected peers
+   */
+  async broadcastMessage(message: string): Promise<void> {
+    if (!this.node) throw new Error('P2P node not started');
+
+    const pubsub = this.node.services.pubsub as any;
+    if (!pubsub) throw new Error('Pubsub not available');
+
+    const broadcast = {
+      from: this.node.peerId.toString(),
+      message,
+      timestamp: Date.now()
+    };
+
+    // Get gossipsub peers for debugging
+    const peers = pubsub.getSubscribers ? pubsub.getSubscribers(BROADCAST_TOPIC) : [];
+    logger.info('Publishing broadcast', { 
+      message: message.slice(0, 50),
+      subscriberCount: peers.length,
+      subscribers: peers.map((p: any) => p.toString().slice(0, 16) + '...')
+    });
+
+    await pubsub.publish(
+      BROADCAST_TOPIC,
+      fromString(JSON.stringify(broadcast))
+    );
+
+    logger.info('Broadcast message sent', { message: message.slice(0, 50) });
   }
 
   /**

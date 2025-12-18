@@ -27,6 +27,23 @@ export const generalLimiter = rateLimit({
 });
 
 /**
+ * Monitoring endpoint rate limiter - very permissive for health/status checks
+ * Skip rate limiting for localhost in development
+ */
+export const monitoringLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 1000, // Allow 1000 requests per minute for monitoring
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: rateLimitMessage,
+  skip: (req) => {
+    // Skip rate limiting for localhost in development/test
+    const isLocalhost = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
+    return config.nodeEnv === 'test' || (config.nodeEnv === 'development' && isLocalhost);
+  }
+});
+
+/**
  * Storage endpoint rate limiter - more restrictive for uploads
  */
 export const storageLimiter = rateLimit({

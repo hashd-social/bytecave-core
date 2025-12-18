@@ -25,6 +25,7 @@ import { replicateHandler } from './routes/replicate.route.js';
 import { healthHandler } from './routes/health.route.js';
 import { listHandler } from './routes/list.route.js';
 import { statusHandler } from './routes/status.route.js';
+import { sendBroadcast, getBroadcasts } from './routes/broadcast.route.js';
 import { proofGenerateHandler, proofListHandler, proofStatsHandler } from './routes/proof.route.js';
 import { 
   reputationScoreHandler, 
@@ -61,15 +62,17 @@ import {
 import { nodeInfoHandler } from './routes/node-info.route.js';
 import { networkStatsHandler } from './routes/network-stats.route.js';
 import { getPeers } from './routes/health.route.js';
+import { connectPeerHandler } from './routes/peer-connect.route.js';
 import { contractIntegrationService } from './services/contract-integration.service.js';
 import { ethers } from 'ethers';
 import {
   generalLimiter,
+  monitoringLimiter,
   storageLimiter,
   proofLimiter,
   replicationLimiter,
-  adminLimiter,
-  readLimiter
+  readLimiter,
+  adminLimiter
 } from './middleware/rate-limit.middleware.js';
 import {
   tlsEnforcementMiddleware,
@@ -143,9 +146,14 @@ app.post('/replicate', replicationLimiter, validateContentFilter, validateShardA
 // Read endpoints
 app.get('/blob/:cid', readLimiter, blobHandler);
 app.get('/blobs', readLimiter, listHandler);
-app.get('/health', generalLimiter, healthHandler);
-app.get('/peers', generalLimiter, getPeers);
-app.get('/status', generalLimiter, statusHandler);
+app.get('/health', monitoringLimiter, healthHandler);
+app.get('/peers', monitoringLimiter, getPeers);
+app.post('/peers/connect', generalLimiter, connectPeerHandler);
+app.get('/status', monitoringLimiter, statusHandler);
+
+// Broadcast endpoints
+app.post('/broadcast', generalLimiter, sendBroadcast);
+app.get('/broadcasts', monitoringLimiter, getBroadcasts);
 
 // Proof endpoints with shard validation (Requirement 4, R7.8)
 app.post('/proofs/generate', proofLimiter, validateShardForProof, proofGenerateHandler);
@@ -279,14 +287,7 @@ async function initializeP2P(): Promise<void> {
   }
 
   try {
-    await p2pService.start({
-      enableP2P: config.p2pEnabled,
-      listenAddresses: config.p2pListenAddresses,
-      bootstrapPeers: config.p2pBootstrapPeers,
-      enableDHT: config.p2pEnableDHT,
-      enableMDNS: config.p2pEnableMDNS,
-      enableRelay: config.p2pEnableRelay
-    });
+    await p2pService.start();
 
     const peerId = p2pService.getPeerId();
     const addrs = p2pService.getMultiaddrs();
