@@ -94,12 +94,12 @@ class P2PService extends EventEmitter {
       services.pubsub = gossipsub({
         emitSelf: false,
         allowPublishToZeroTopicPeers: true,
-        // Gossipsub mesh parameters for better propagation
-        D: 6, // Desired number of peers in mesh
-        Dlo: 4, // Lower bound for mesh peers
-        Dhi: 12, // Upper bound for mesh peers
-        Dlazy: 6, // Number of peers for gossip (not in mesh)
-        heartbeatInterval: 1000 // Send heartbeat every 1 second
+        // Mesh parameters adjusted for small networks (2-3 nodes)
+        D: 2,    // Desired: 2 peers (achievable with 3 nodes)
+        Dlo: 1,  // Minimum: 1 peer (allows mesh with just 2 nodes)
+        Dhi: 3,  // Maximum: 3 peers (all available peers)
+        Dlazy: 2,
+        heartbeatInterval: 1000
       });
 
       if (config.p2pEnableMDNS) {
