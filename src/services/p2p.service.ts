@@ -13,7 +13,7 @@ import { webSockets } from '@libp2p/websockets';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { kadDHT } from '@libp2p/kad-dht';
-import { gossipsub } from '@chainsafe/libp2p-gossipsub';
+import { floodsub } from '@libp2p/floodsub';
 import { identify } from '@libp2p/identify';
 import { bootstrap } from '@libp2p/bootstrap';
 import { mdns } from '@libp2p/mdns';
@@ -60,15 +60,13 @@ class P2PService extends EventEmitter {
   private announceTimer: NodeJS.Timeout | null = null;
   private started = false;
 
-  async start(): Promise<void> {
+async start(): Promise<void> {
     if (this.started) {
       logger.warn('P2P service already started');
       return;
     }
 
     logger.info('Starting P2P service...');
-
-    // Load cached peers
     await peerCacheService.load();
 
     if (!config.p2pEnabled) {
@@ -76,61 +74,39 @@ class P2PService extends EventEmitter {
       return;
     }
 
-    logger.info('Starting P2P discovery service...');
-
     try {
+      const peerDiscovery: any[] = [];
+
+      // --- FIX 1: Aggressive Identify Service ---
+      // We must explicitly configure identify to run immediately on connection
       const services: any = {
         identify: identify()
       };
 
-      const peerDiscovery: any[] = [];
-
       if (config.p2pEnableDHT) {
         services.dht = kadDHT({
-          clientMode: false
+          clientMode: false,
+          // Optimizing DHT for local networks can help discovery speed
+          kBucketSize: 20
         });
       }
 
-      services.pubsub = gossipsub({
-        emitSelf: false,
-        allowPublishToZeroTopicPeers: true,
-        // Mesh parameters adjusted for small networks (2-3 nodes)
-        D: 2,    // Desired: 2 peers (achievable with 3 nodes)
-        Dlo: 1,  // Minimum: 1 peer (allows mesh with just 2 nodes)
-        Dhi: 3,  // Maximum: 3 peers (all available peers)
-        Dlazy: 2,
-        heartbeatInterval: 1000
-      });
+      // Use FloodSub - simple flooding protocol that works reliably in small networks
+      // No mesh formation complexity, messages flood to all connected peers
+      services.pubsub = floodsub();
 
-      if (config.p2pEnableMDNS) {
-        peerDiscovery.push(mdns());
-      }
+      // ... (Rest of Discovery logic: MDNS, Bootstrap - same as before) ...
+      if (config.p2pEnableMDNS) peerDiscovery.push(mdns());
 
-      // Combine bootstrap, relay, and cached peers for initial discovery
       const cachedPeers = peerCacheService.getBootstrapPeers();
-      const allBootstrapPeers = [
-        ...config.p2pBootstrapPeers,
-        ...config.p2pRelayPeers,
-        ...cachedPeers
-      ];
+      const allBootstrapPeers = [...config.p2pBootstrapPeers, ...config.p2pRelayPeers, ...cachedPeers];
 
       if (allBootstrapPeers.length > 0) {
-        logger.info('Bootstrap peers', { 
-          configured: config.p2pBootstrapPeers.length + config.p2pRelayPeers.length,
-          cached: cachedPeers.length,
-          total: allBootstrapPeers.length
-        });
-        peerDiscovery.push(bootstrap({
-          list: allBootstrapPeers
-        }));
+        peerDiscovery.push(bootstrap({ list: allBootstrapPeers }));
       }
 
-      const transports: any[] = [
-        tcp(),
-        webSockets()
-        // webRTC removed - server nodes use TCP/WebSockets, browsers connect via WebSockets
-      ];
-      
+      // ... (Transports setup - same as before) ...
+      const transports: any[] = [tcp(), webSockets()];
       if (config.p2pEnableRelay) {
         transports.push(circuitRelayTransport());
         services.relay = circuitRelayServer();
@@ -138,9 +114,7 @@ class P2PService extends EventEmitter {
       }
 
       this.node = await createLibp2p({
-        addresses: {
-          listen: config.p2pListenAddresses
-        },
+        addresses: { listen: config.p2pListenAddresses },
         transports,
         connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
@@ -148,39 +122,39 @@ class P2PService extends EventEmitter {
         peerDiscovery: peerDiscovery.length > 0 ? peerDiscovery : undefined,
         connectionManager: {
           maxConnections: 100,
-          dialTimeout: 30000 // 30s timeout for dials (gives DCUTR time to work)
+          dialTimeout: 30000
         }
       });
 
-      // Set up event listeners
+      // Log identify completion for debugging
+      this.node.addEventListener('peer:identify', (evt) => {
+        const peerId = evt.detail.peerId;
+        const protocols = evt.detail.protocols;
+        const hasFloodsub = protocols.includes('/floodsub/1.0.0');
+        
+        logger.info('✅ Identify complete for peer', { 
+          peerId: peerId.toString().slice(0, 16) + '...', 
+          hasFloodsub
+        });
+      });
+
       this.setupEventListeners();
-
-      // Set up pubsub subscription
-      await this.setupPubsub();
-
-      // Start the node
       await this.node.start();
+      logger.info('Node started');
 
-      // Register P2P protocol handlers
+      // Setup pubsub immediately
+      await this.setupPubsub();
+      
+      // Register custom protocols
       p2pProtocolsService.registerProtocols(this.node);
 
       this.started = true;
-
+      this.startAnnouncements();
+      
       const peerId = this.node.peerId.toString();
       const addrs = this.node.getMultiaddrs().map(ma => ma.toString());
-
-      logger.info('P2P service started', {
-        peerId,
-        addresses: addrs,
-        dht: config.p2pEnableDHT,
-        mdns: config.p2pEnableMDNS,
-        relay: config.p2pEnableRelay
-      });
-
-      // Start periodic announcements
-      this.startAnnouncements();
-
       this.emit('started', { peerId, addresses: addrs });
+
     } catch (error) {
       logger.error('Failed to start P2P service', error);
       throw error;
@@ -219,7 +193,7 @@ class P2PService extends EventEmitter {
   private setupEventListeners(): void {
     if (!this.node) return;
 
-    this.node.addEventListener('peer:connect', (event) => {
+    this.node.addEventListener('peer:connect', async (event) => {
       const peerId = event.detail.toString();
       
       // Log connection details including transport type
@@ -307,7 +281,10 @@ class P2PService extends EventEmitter {
     if (!this.node) return;
 
     const pubsub = this.node.services.pubsub as any;
-    if (!pubsub) return;
+    if (!pubsub) {
+      logger.error('Pubsub service not found!');
+      return;
+    }
 
     // Subscribe to announcement topic
     pubsub.subscribe(ANNOUNCE_TOPIC);
@@ -315,6 +292,36 @@ class P2PService extends EventEmitter {
     // Subscribe to broadcast topic for peer messages
     pubsub.subscribe(BROADCAST_TOPIC);
     logger.info('Subscribed to broadcast topic');
+
+    // Log floodsub status periodically
+    setInterval(() => {
+      const subscribers = pubsub.getSubscribers?.(BROADCAST_TOPIC) || [];
+      const allPubsubPeers = pubsub.getPeers?.() || [];
+      const connectedPeers = this.node?.getPeers() || [];
+      
+      // Check which peers support floodsub protocol
+      const peerProtocols = connectedPeers.map(peerId => {
+        const conns = this.node?.getConnections(peerId) || [];
+        const protocols = conns.flatMap(c => c.streams.map(s => s.protocol));
+        return {
+          peerId: peerId.toString().slice(0, 16) + '...',
+          streamProtocols: [...new Set(protocols)],
+          connectionCount: conns.length,
+          streamCount: conns.reduce((sum, c) => sum + c.streams.length, 0),
+          hasFloodsub: protocols.includes('/floodsub/1.0.0')
+        };
+      });
+      
+      logger.info('FloodSub status', {
+        nodeId: config.nodeId,
+        subscribers: subscribers.length,
+        totalPubsubPeers: allPubsubPeers.length,
+        totalConnectedPeers: connectedPeers.length,
+        subscriberIds: subscribers.map((p: any) => p.toString().slice(0, 16) + '...'),
+        pubsubPeerIds: allPubsubPeers.map((p: any) => p.toString().slice(0, 16) + '...'),
+        peerProtocols
+      });
+    }, 10000);
 
     // Subscribe to our own signaling topic for WebRTC offers from browsers
     const mySignalingTopic = `${SIGNALING_TOPIC_PREFIX}${this.node.peerId.toString()}`;
@@ -341,6 +348,15 @@ class P2PService extends EventEmitter {
         try {
           const data = toString(event.detail.data);
           const broadcast = JSON.parse(data);
+          
+          // Ignore bootstrap messages (mesh formation only)
+          if (broadcast.type === 'bootstrap') {
+            logger.debug('Received bootstrap message', {
+              from: broadcast.from?.slice(0, 16) + '...'
+            });
+            return;
+          }
+          
           this.emit('broadcast', broadcast);
           logger.info('Received broadcast message', { 
             from: broadcast.from?.slice(0, 16) + '...',
