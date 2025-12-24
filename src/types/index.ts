@@ -69,6 +69,7 @@ export interface HealthResponse {
   totalSize: number;
   latencyMs: number;
   version: string;
+  nodeId?: string; // Node identifier for display (e.g., "bat-alpha")
   peers: number; // Legacy: replication peers count
   p2p: {
     connected: number;    // Total P2P connections

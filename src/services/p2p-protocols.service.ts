@@ -21,6 +21,7 @@ export const PROTOCOL_REPLICATE = '/bytecave/replicate/1.0.0';
 export const PROTOCOL_BLOB = '/bytecave/blob/1.0.0';
 export const PROTOCOL_HEALTH = '/bytecave/health/1.0.0';
 export const PROTOCOL_INFO = '/bytecave/info/1.0.0';
+export const PROTOCOL_HAVE_LIST = '/bytecave/have-list/1.0.0';
 
 // Message types for protocol communication
 interface ReplicateRequest {
@@ -68,6 +69,17 @@ export interface P2PInfoResponse {
   contentTypes: string[] | 'all';
 }
 
+interface HaveListRequest {
+  limit?: number; // Max number of CIDs to return
+  offset?: number; // Pagination offset
+}
+
+interface HaveListResponse {
+  cids: string[];
+  total: number;
+  hasMore: boolean;
+}
+
 class P2PProtocolsService {
   private node: Libp2p | null = null;
   private startTime = Date.now();
@@ -87,9 +99,11 @@ class P2PProtocolsService {
       this.handleHealth(stream, connection));
     node.handle(PROTOCOL_INFO, (stream: Stream, connection: Connection) => 
       this.handleInfo(stream, connection));
+    node.handle(PROTOCOL_HAVE_LIST, (stream: Stream, connection: Connection) => 
+      this.handleHaveList(stream, connection));
 
     logger.info('P2P protocols registered', {
-      protocols: [PROTOCOL_REPLICATE, PROTOCOL_BLOB, PROTOCOL_HEALTH, PROTOCOL_INFO]
+      protocols: [PROTOCOL_REPLICATE, PROTOCOL_BLOB, PROTOCOL_HEALTH, PROTOCOL_INFO, PROTOCOL_HAVE_LIST]
     });
   }
 
@@ -103,6 +117,7 @@ class P2PProtocolsService {
     this.node.unhandle(PROTOCOL_BLOB);
     this.node.unhandle(PROTOCOL_HEALTH);
     this.node.unhandle(PROTOCOL_INFO);
+    this.node.unhandle(PROTOCOL_HAVE_LIST);
 
     logger.info('P2P protocols unregistered');
   }
@@ -113,19 +128,58 @@ class P2PProtocolsService {
 
   /**
    * Handle incoming replicate request
+   * SECURITY: Verifies peer authorization and on-chain CID existence before accepting replication.
+   * This prevents malicious nodes (even modified official code) from injecting unauthorized blobs.
    */
   private async handleReplicate(stream: Stream, connection: Connection): Promise<void> {
     const remotePeer = connection.remotePeer.toString();
     logger.debug('Handling replicate request', { from: remotePeer });
 
     try {
-      // Check if peer is blocked
+      // SECURITY CHECK 1: Verify peer is not blocked
       const { blockedContentService } = await import('./blocked-content.service.js');
       if (await blockedContentService.isPeerBlocked(remotePeer)) {
         logger.warn('Replication rejected: Peer is blocked', { peerId: remotePeer });
         await this.writeMessage(stream, { success: false, error: 'Peer blocked' });
         return;
       }
+
+      // SECURITY CHECK 2: Verify peer is an authorized VaultNode (registered on-chain)
+      const { contractIntegrationService } = await import('./contract-integration.service.js');
+      
+      // Get peer's public key from libp2p connection
+      const peerPublicKey = connection.remotePeer.publicKey;
+      if (!peerPublicKey) {
+        logger.warn('Replication rejected: Peer has no public key', { peerId: remotePeer });
+        await this.writeMessage(stream, { success: false, error: 'Peer authentication failed' });
+        return;
+      }
+      
+      // Convert libp2p public key to bytes for on-chain lookup
+      // The public key raw property is a Uint8Array
+      const publicKeyBytes = peerPublicKey.raw;
+      const publicKeyHex = '0x' + Buffer.from(publicKeyBytes).toString('hex');
+      
+      // Hash the public key to get nodeId (same as contract does)
+      const { ethers } = await import('ethers');
+      const nodeId = ethers.keccak256(publicKeyHex);
+      
+      // Verify node is registered and active in VaultNodeRegistry
+      const isAuthorized = await contractIntegrationService.isNodeActive(nodeId);
+      if (!isAuthorized) {
+        logger.warn('Replication rejected: Peer not registered in VaultNodeRegistry', { 
+          peerId: remotePeer,
+          nodeId,
+          publicKey: publicKeyHex.slice(0, 20) + '...'
+        });
+        await this.writeMessage(stream, { success: false, error: 'Peer not authorized' });
+        return;
+      }
+      
+      logger.debug('✅ Peer authorization verified via VaultNodeRegistry', { 
+        peerId: remotePeer,
+        nodeId: nodeId.slice(0, 16) + '...'
+      });
 
       // Read the request
       const request = await this.readMessage<ReplicateRequest>(stream);
@@ -135,10 +189,40 @@ class P2PProtocolsService {
         return;
       }
 
-      // Check if CID is blocked
+      // SECURITY CHECK 3: Verify CID is not blocked
       if (await blockedContentService.isBlocked(request.cid)) {
         logger.warn('Replication rejected: CID is blocked', { cid: request.cid, from: remotePeer });
         await this.writeMessage(stream, { success: false, error: 'Content blocked' });
+        return;
+      }
+
+      // SECURITY CHECK 4: Verify CID matches ciphertext (cryptographic integrity)
+      const ciphertext = Buffer.from(request.ciphertext, 'base64');
+      const { verifyCID } = await import('../utils/cid.js');
+      if (!verifyCID(request.cid, ciphertext)) {
+        logger.warn('Replication rejected: CID mismatch - tampered content', { 
+          cid: request.cid, 
+          from: remotePeer 
+        });
+        await this.writeMessage(stream, { success: false, error: 'CID verification failed' });
+        return;
+      }
+
+      // SECURITY CHECK 5: Verify CID exists on-chain in authorized contracts
+      // This prevents malicious nodes from injecting unauthorized blobs
+      const { storageAuthorizationService } = await import('./storage-authorization.service.js');
+      const onChainVerification = await storageAuthorizationService.verifyCIDOnChain(request.cid);
+      
+      if (!onChainVerification.authorized) {
+        logger.warn('Replication rejected: CID not found on-chain', { 
+          cid: request.cid, 
+          from: remotePeer,
+          error: onChainVerification.error
+        });
+        await this.writeMessage(stream, { 
+          success: false, 
+          error: 'CID not authorized on-chain' 
+        });
         return;
       }
 
@@ -150,15 +234,18 @@ class P2PProtocolsService {
         return;
       }
 
-      // Store the blob
-      const ciphertext = Buffer.from(request.ciphertext, 'base64');
+      // All security checks passed - store the blob
       await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
         contentType: request.contentType,
         guildId: request.guildId,
         fromPeer: remotePeer
       });
 
-      logger.info('Blob replicated via P2P', { cid: request.cid, from: remotePeer });
+      logger.info('Blob replicated via P2P - all security checks passed', { 
+        cid: request.cid, 
+        from: remotePeer,
+        onChainSource: onChainVerification.source
+      });
       await this.writeMessage(stream, { success: true });
 
     } catch (error: any) {
@@ -267,6 +354,39 @@ class P2PProtocolsService {
 
     } catch (error: any) {
       logger.error('Info handler error', { error: error.message });
+    }
+  }
+
+  /**
+   * Handle incoming have-list request
+   */
+  private async handleHaveList(stream: Stream, connection: Connection): Promise<void> {
+    const remotePeer = connection.remotePeer.toString();
+    logger.debug('Handling have-list request', { from: remotePeer });
+
+    try {
+      const request = await this.readMessage<HaveListRequest>(stream);
+      
+      const limit = request?.limit || 100;
+      const offset = request?.offset || 0;
+
+      // Get list of CIDs we have
+      const allBlobs = await storageService.listBlobs();
+      const total = allBlobs.length;
+      const cids = allBlobs.slice(offset, offset + limit).map(blob => blob.cid);
+      const hasMore = offset + limit < total;
+
+      const response: HaveListResponse = {
+        cids,
+        total,
+        hasMore
+      };
+
+      await this.writeMessage(stream, response);
+      logger.debug('Sent have-list to peer', { to: remotePeer, count: cids.length, total });
+
+    } catch (error: any) {
+      logger.error('Have-list handler error', { error: error.message });
     }
   }
 
@@ -386,6 +506,32 @@ class P2PProtocolsService {
 
     } catch (error: any) {
       logger.warn('Failed to get info from peer', { peerId, error: error.message });
+      return null;
+    }
+  }
+
+  /**
+   * Get list of CIDs a peer has via P2P stream
+   */
+  async getHaveListFromPeer(peerId: string, options?: { limit?: number; offset?: number }): Promise<HaveListResponse | null> {
+    if (!this.node) return null;
+
+    try {
+      const stream = await this.node.dialProtocol(peerId as any, PROTOCOL_HAVE_LIST);
+
+      const request: HaveListRequest = {
+        limit: options?.limit || 100,
+        offset: options?.offset || 0
+      };
+
+      await this.writeMessage(stream, request);
+      const response = await this.readMessage<HaveListResponse>(stream);
+      
+      await stream.close();
+      return response;
+
+    } catch (error: any) {
+      logger.warn('Failed to get have-list from peer', { peerId, error: error.message });
       return null;
     }
   }

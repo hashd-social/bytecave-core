@@ -21,15 +21,24 @@ const USER_PROFILE_ABI = [
   'function isMember(address user, address groupToken) view returns (bool)'
 ];
 
-const GROUP_POSTS_ABI = [
-  'function groupToken() view returns (address)',
-  'function userProfile() view returns (address)',
-  'function groupOwner() view returns (address)'
+const POST_STORAGE_ABI = [
+  'function getPost(uint256 postId) view returns (uint256 id, address author, string ipfsHash, uint256 upvotes, uint256 downvotes, uint256 timestamp, uint8 accessLevel, address groupContract, bool isDeleted)',
+  'function getPostByCID(string cid) view returns (uint256 postId, bool exists)'
 ];
 
 const GROUP_FACTORY_ABI = [
   'function getGroupByToken(address tokenAddr) view returns (tuple(string title, string description, string imageURI, address owner, address tokenAddress, address nftAddress, address postsAddress))'
 ];
+
+const MESSAGE_STORAGE_ABI = [
+  'function messages(bytes32 messageId) view returns (tuple(address sender, address[] recipients, string contentCID, uint256 timestamp, bool exists))',
+  'function getMessageByCID(string cid) view returns (bytes32 messageId, bool exists)'
+];
+
+// TokenDistribution ABI - for future implementation when contract has CID lookup
+// const TOKEN_DISTRIBUTION_ABI = [
+//   'function distributions(uint256 distributionId) view returns (tuple(address token, string metadataCID, uint256 timestamp, bool exists))'
+// ];
 
 // Signature message format
 const SIGNATURE_MESSAGE_TEMPLATE = `HASHD Vault Storage Request
@@ -42,6 +51,8 @@ Nonce: {nonce}`;
 export class StorageAuthorizationService {
   private provider: ethers.Provider | null = null;
   private groupFactoryAddress: string | null = null;
+  private messageStorageAddress: string | null = null;
+  private postStorageAddress: string | null = null;
   private initialized = false;
   
   // Timestamp tolerance (5 minutes)
@@ -50,6 +61,10 @@ export class StorageAuthorizationService {
   // Nonce cache to prevent replay attacks (in production, use Redis)
   private usedNonces: Map<string, number> = new Map();
   private readonly NONCE_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
+  
+  // CID verification cache (to avoid excessive RPC calls)
+  private cidVerificationCache: Map<string, { authorized: boolean; source: string; timestamp: number }> = new Map();
+  private readonly CID_CACHE_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
 
   /**
    * Initialize the service with RPC and contract addresses
@@ -57,21 +72,130 @@ export class StorageAuthorizationService {
   async initialize(config: {
     rpcUrl: string;
     groupFactoryAddress: string;
+    messageStorageAddress?: string;
+    postStorageAddress?: string;
   }): Promise<void> {
     try {
       this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
       this.groupFactoryAddress = config.groupFactoryAddress;
+      this.messageStorageAddress = config.messageStorageAddress || null;
+      this.postStorageAddress = config.postStorageAddress || null;
       this.initialized = true;
       
       logger.info('Storage authorization service initialized', {
-        groupFactory: config.groupFactoryAddress
+        groupFactory: config.groupFactoryAddress,
+        messageStorage: config.messageStorageAddress || 'not configured',
+        postStorage: config.postStorageAddress || 'not configured'
       });
       
-      // Start nonce cleanup interval
+      // Start cleanup intervals
       setInterval(() => this.cleanupExpiredNonces(), 60000);
+      setInterval(() => this.cleanupExpiredCIDCache(), 60000);
     } catch (error) {
       logger.error('Failed to initialize storage authorization service', error);
       throw error;
+    }
+  }
+
+  /**
+   * Verify that a CID exists on-chain in authorized contracts
+   * Used to validate P2P replication requests
+   */
+  async verifyCIDOnChain(cid: string): Promise<{ authorized: boolean; source?: string; error?: string }> {
+    if (!this.initialized || !this.provider) {
+      return { authorized: false, error: 'Authorization service not initialized' };
+    }
+
+    // Check cache first
+    const cached = this.cidVerificationCache.get(cid);
+    if (cached && Date.now() - cached.timestamp < this.CID_CACHE_EXPIRY_MS) {
+      logger.debug('CID verification cache hit', { cid, source: cached.source });
+      return { authorized: cached.authorized, source: cached.source };
+    }
+
+    try {
+      logger.debug('Verifying CID on-chain', { cid });
+
+      // Check MessageStorage contract
+      if (this.messageStorageAddress) {
+        const messageStorage = new ethers.Contract(
+          this.messageStorageAddress,
+          MESSAGE_STORAGE_ABI,
+          this.provider
+        );
+
+        try {
+          const result = await messageStorage.getMessageByCID(cid);
+          if (result.exists) {
+            const cacheEntry = { authorized: true, source: 'MessageStorage', timestamp: Date.now() };
+            this.cidVerificationCache.set(cid, cacheEntry);
+            logger.info('CID verified on-chain', { cid, source: 'MessageStorage' });
+            return { authorized: true, source: 'MessageStorage' };
+          }
+        } catch (error: any) {
+          logger.debug('CID not found in MessageStorage', { cid });
+        }
+      }
+
+      // Check PostStorage contract (central storage for all group posts)
+      if (this.postStorageAddress) {
+        const postStorage = new ethers.Contract(
+          this.postStorageAddress,
+          POST_STORAGE_ABI,
+          this.provider
+        );
+
+        try {
+          const result = await postStorage.getPostByCID(cid);
+          if (result.exists) {
+            const cacheEntry = { authorized: true, source: 'PostStorage', timestamp: Date.now() };
+            this.cidVerificationCache.set(cid, cacheEntry);
+            logger.info('CID verified on-chain', { cid, source: 'PostStorage' });
+            return { authorized: true, source: 'PostStorage' };
+          }
+        } catch (error: any) {
+          logger.debug('CID not found in PostStorage', { cid });
+        }
+      }
+
+      // CID not found in any configured contract
+      const cacheEntry = { authorized: false, source: 'none', timestamp: Date.now() };
+      this.cidVerificationCache.set(cid, cacheEntry);
+      
+      logger.warn('CID not found in any authorized contract', { 
+        cid,
+        checkedContracts: {
+          messageStorage: !!this.messageStorageAddress,
+          postStorage: !!this.postStorageAddress
+        }
+      });
+
+      return { 
+        authorized: false, 
+        error: 'CID not found in authorized contracts'
+      };
+    } catch (error: any) {
+      logger.error('Failed to verify CID on-chain', { cid, error: error.message });
+      return { authorized: false, error: error.message };
+    }
+  }
+
+  /**
+   * Clean up expired CID verification cache entries
+   */
+  private cleanupExpiredCIDCache(): void {
+    const now = Date.now();
+    let cleaned = 0;
+
+    for (const [cid, entry] of this.cidVerificationCache.entries()) {
+      if (now - entry.timestamp > this.CID_CACHE_EXPIRY_MS) {
+        this.cidVerificationCache.delete(cid);
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      logger.debug('Cleaned up expired CID cache entries', { count: cleaned });
     }
   }
 
@@ -234,6 +358,11 @@ export class StorageAuthorizationService {
 
     try {
       // Get group token from GroupPosts contract
+      const GROUP_POSTS_ABI = [
+        'function groupToken() view returns (address)',
+        'function userProfile() view returns (address)',
+        'function groupOwner() view returns (address)'
+      ];
       const groupPostsContract = new ethers.Contract(
         authorization.groupPostsAddress,
         GROUP_POSTS_ABI,

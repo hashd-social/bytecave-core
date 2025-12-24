@@ -21,7 +21,8 @@ import { requestLogger } from './middleware/logging.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
 import { storeHandler } from './routes/store.route.js';
 import { blobHandler } from './routes/blob.route.js';
-import { replicateHandler } from './routes/replicate.route.js';
+// REMOVED: replicate.route.js - insecure HTTP endpoint that bypassed authorization
+// Replication now only allowed via P2P protocols with peer verification
 import { healthHandler } from './routes/health.route.js';
 import { listHandler } from './routes/list.route.js';
 import { statusHandler } from './routes/status.route.js';
@@ -70,7 +71,6 @@ import {
   monitoringLimiter,
   storageLimiter,
   proofLimiter,
-  replicationLimiter,
   readLimiter,
   adminLimiter
 } from './middleware/rate-limit.middleware.js';
@@ -140,8 +140,10 @@ app.disable('x-powered-by');
  */
 
 // Storage endpoints with shard validation (R7.5) and content type filtering
+// Only /store is allowed - requires on-chain authorization
 app.post('/store', storageLimiter, validateContentFilter, validateShardAssignment, storeHandler);
-app.post('/replicate', replicationLimiter, validateContentFilter, validateShardAssignment, replicateHandler);
+// REMOVED: /replicate endpoint - was insecure, allowed bypassing authorization
+// Replication now only via P2P protocols (/bytecave/replicate/1.0.0) with peer verification
 
 // Read endpoints
 app.get('/blob/:cid', readLimiter, blobHandler);
@@ -395,7 +397,9 @@ async function initializeStorageAuthorization(): Promise<void> {
     
     await storageAuthorizationService.initialize({
       rpcUrl,
-      groupFactoryAddress
+      groupFactoryAddress,
+      messageStorageAddress: process.env.MESSAGE_STORAGE_ADDRESS,
+      postStorageAddress: process.env.POST_STORAGE_ADDRESS
     });
 
     logger.info('✅ Storage authorization service initialized');

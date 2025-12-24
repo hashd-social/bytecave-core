@@ -178,6 +178,7 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       totalSize: stats.totalSize,
       latencyMs: metrics.avgLatency,
       version: VERSION,
+      nodeId: config.nodeId, // Add node ID for display in dashboard
       peers: peerCount, // Legacy: replication peers for backward compatibility
       p2p: {
         connected: connectedPeers,      // Total P2P connections
