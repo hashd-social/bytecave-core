@@ -25,7 +25,7 @@ import { fromString, toString } from 'uint8arrays';
 import { multiaddr } from '@multiformats/multiaddr';
 import { EventEmitter } from 'events';
 import { logger } from '../utils/logger.js';
-import { config } from '../config/index.js';
+import { config, getConfigManager } from '../config/index.js';
 import { p2pProtocolsService } from './p2p-protocols.service.js';
 import { peerCacheService } from './peer-cache.service.js';
 
@@ -217,6 +217,20 @@ async start(): Promise<void> {
           .flatMap(conn => conn.remoteAddr ? [conn.remoteAddr.toString()] : []) || [];
         if (addrs.length > 0) {
           peerCacheService.addPeer(peerId, addrs);
+          
+          // Save discovered peer to bootstrap peers in config.json
+          // This allows the node to reconnect to this peer on restart
+          const configManager = getConfigManager(config.dataDir);
+          for (const addr of addrs) {
+            // Only save non-relay addresses (direct connections)
+            if (!addr.includes('/p2p-circuit/')) {
+              const fullAddr = addr.includes(peerId) ? addr : `${addr}/p2p/${peerId}`;
+              const added = configManager.addBootstrapPeer(fullAddr);
+              if (added) {
+                logger.info('Saved peer to bootstrap peers', { multiaddr: fullAddr });
+              }
+            }
+          }
         }
       }
       

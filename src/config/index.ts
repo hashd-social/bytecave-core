@@ -4,6 +4,7 @@
 
 import dotenv from 'dotenv';
 import { Config, ContentType, ContentFilterConfig } from '../types/index.js';
+import { getConfigManager } from './config-manager.js';
 
 dotenv.config();
 
@@ -116,22 +117,33 @@ function parseContentFilter(): ContentFilterConfig {
   return { types, allowedGuilds, blockedGuilds };
 }
 
+// Initialize ConfigManager and load persisted config
+// First get the base data directory and nodeId
+const baseDataDir = process.env.DATA_DIR || './data';
+const nodeId = process.env.NODE_ID || 'vault-node-1';
+
+// Create data directory path with nodeId subfolder: e.g., ./data/vault-node-1
+const dataDir = `${baseDataDir}/${nodeId}`;
+
+const configManager = getConfigManager(dataDir);
+const persistedConfig = configManager.getConfig();
+
 export const config: Config = {
   // Node identification
   nodeEnv: process.env.NODE_ENV || 'development',
-  nodeId: process.env.NODE_ID || 'vault-node-1',
-  port: parseInt(process.env.PORT || '3004'),
+  nodeId: persistedConfig.nodeId || nodeId,
+  port: parseInt(process.env.PORT || String(persistedConfig.port || 3004)),
   nodeUrl: process.env.NODE_URL || 'http://localhost:3004',
   
   // Node identity for P2P and registration
   publicKey: process.env.PUBLIC_KEY || '',
   ownerAddress: process.env.OWNER_ADDRESS || '',
 
-  // P2P Configuration
+  // P2P Configuration - merge env vars with persisted config
   p2pEnabled: getEnvBoolean('P2P_ENABLED', true),
   p2pListenAddresses: getEnvArray('P2P_LISTEN_ADDRESSES', ['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/tcp/4002/ws']),
-  p2pBootstrapPeers: getEnvArray('P2P_BOOTSTRAP_PEERS', []),
-  p2pRelayPeers: getEnvArray('P2P_RELAY_PEERS', []),
+  p2pBootstrapPeers: getEnvArray('P2P_BOOTSTRAP_PEERS', persistedConfig.p2pBootstrapPeers || []),
+  p2pRelayPeers: getEnvArray('P2P_RELAY_PEERS', persistedConfig.p2pRelayPeers || []),
   p2pEnableDHT: getEnvBoolean('P2P_ENABLE_DHT', true),
   p2pEnableMDNS: getEnvBoolean('P2P_ENABLE_MDNS', true),
   p2pEnableRelay: getEnvBoolean('P2P_ENABLE_RELAY', true),
@@ -158,7 +170,8 @@ export const config: Config = {
   gcVerifyReplicas: getEnvBoolean('GC_VERIFY_REPLICAS', true),
   gcVerifyProofs: getEnvBoolean('GC_VERIFY_PROOFS', false),
 
-  dataDir: getEnv('DATA_DIR', './data'),
+  // Use the computed dataDir with nodeId subfolder
+  dataDir: dataDir,
   maxBlobSizeMB: getEnvNumber('MAX_BLOB_SIZE_MB', 10),
   maxStorageGB: getEnvNumber('MAX_STORAGE_GB', 100),
   replicationEnabled: getEnvBoolean('REPLICATION_ENABLED', true),
@@ -256,3 +269,6 @@ function validateDataDirectorySafety(): void {
     }
   }
 }
+
+// Export ConfigManager for runtime config updates
+export { configManager, getConfigManager };
