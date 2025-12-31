@@ -124,6 +124,38 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // Check if THIS node is registered in VaultNodeRegistry
+    if (config.publicKey) {
+      try {
+        const { contractIntegrationService } = await import('../services/contract-integration.service.js');
+        const nodeId = ethers.keccak256(config.publicKey);
+        const isNodeRegistered = await contractIntegrationService.isNodeActive(nodeId);
+
+        if (!isNodeRegistered) {
+          logger.warn('Storage rejected: This node is not registered in VaultNodeRegistry', { 
+            nodeId: nodeId.slice(0, 16) + '...',
+            sender: authorization.sender 
+          });
+          res.status(503).json({
+            error: 'NODE_NOT_REGISTERED',
+            message: 'This storage node is not registered in the VaultNodeRegistry',
+            timestamp: Date.now()
+          });
+          return;
+        }
+
+        logger.debug('✅ Node registration verified', { nodeId: nodeId.slice(0, 16) + '...' });
+      } catch (error: any) {
+        logger.error('Failed to verify node registration', { error: error.message });
+        res.status(503).json({
+          error: 'REGISTRATION_CHECK_FAILED',
+          message: 'Unable to verify node registration status',
+          timestamp: Date.now()
+        });
+        return;
+      }
+    }
+
     // Generate CID
     const cid = generateCID(ciphertextBuffer);
 

@@ -55,7 +55,7 @@ This ensures the node builds a persistent peer list over time.
     "/ip4/192.168.1.101/tcp/4001/p2p/12D3KooWExample2"
   ],
   "p2pRelayPeers": [
-    "/ip4/127.0.0.1/tcp/4002/ws/p2p/12D3KooWDUsTtqKh7VcnydpAe5G8SwiMKYramFny6caML58zbg9Y"
+    "/ip4/127.0.0.1/tcp/4002/ws/p2p/12D3KooWD6st4WVx515K5pVCaXkt1GXyhuAKgZK95XJgtyxhG3RW"
   ],
   "nodeId": "vault-node-1",
   "port": 3004,

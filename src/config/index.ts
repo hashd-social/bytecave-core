@@ -123,7 +123,10 @@ const baseDataDir = process.env.DATA_DIR || './data';
 const nodeId = process.env.NODE_ID || 'vault-node-1';
 
 // Create data directory path with nodeId subfolder: e.g., ./data/vault-node-1
-const dataDir = `${baseDataDir}/${nodeId}`;
+// Check if baseDataDir already ends with nodeId to avoid double-nesting
+const dataDir = baseDataDir.endsWith(nodeId) 
+  ? baseDataDir 
+  : `${baseDataDir}/${nodeId}`;
 
 const configManager = getConfigManager(dataDir);
 const persistedConfig = configManager.getConfig();
@@ -184,6 +187,23 @@ export const config: Config = {
   logLevel: getEnv('LOG_LEVEL', 'info'),
   corsOrigin: getEnvArray('CORS_ORIGIN', ['http://localhost:3000'])
 };
+
+// Write complete config to config.json on startup
+// This ensures config.json is always a complete mirror of the running config
+configManager.updateNodeConfig({
+  nodeId: config.nodeId,
+  port: config.port,
+  nodeUrl: config.nodeUrl,
+  maxStorageMB: config.gcMaxStorageMB,
+  dataDir: config.dataDir,
+  contentTypes: config.contentFilter.types === 'all' ? 'all' : config.contentFilter.types.join(','),
+  publicKey: config.publicKey,
+  ownerAddress: config.ownerAddress,
+  shardCount: config.shardCount,
+  nodeShards: config.nodeShards as Array<{ start: number; end: number }>,
+  p2pBootstrapPeers: config.p2pBootstrapPeers,
+  p2pRelayPeers: config.p2pRelayPeers
+});
 
 export function validateConfig(): void {
   if (config.port < 1 || config.port > 65535) {

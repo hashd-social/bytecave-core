@@ -7,13 +7,16 @@ export interface BlobMetadata {
   size: number;
   mimeType: string;
   createdAt: number;
-  version: number; // Schema version, starting at 1
+  version: number; // Schema version, starting at 2
   pinned?: boolean; // Never delete if true (Requirement 9)
   integrityHash?: string; // HMAC of critical fields to detect tampering
-  // Content type for policy enforcement (messages, posts, media, listings)
-  contentType?: string;
-  // Guild ID for guild-specific filtering
-  guildId?: string;
+  // Application metadata (v2)
+  appId?: string;        // keccak256(appName) - which app stored this
+  contentType?: string;  // Application-defined content type (message, post, etc)
+  sender?: string;       // Address that stored this blob
+  timestamp?: number;    // When blob was stored
+  // Additional metadata for queries
+  metadata?: Record<string, any>; // Flexible metadata for application use
   replication?: {
     fromPeer?: string;
     replicatedAt?: number;
@@ -51,9 +54,12 @@ export interface ReplicateRequest {
   ciphertext: string;
   mimeType: string;
   fromPeer: string;
-  // Content policy metadata (passed from original store)
+  // Application metadata (passed from original store)
+  appId?: string;
   contentType?: string;
-  guildId?: string;
+  sender?: string;
+  timestamp?: number;
+  metadata?: Record<string, any>;
 }
 
 export interface ReplicateResponse {
@@ -843,10 +849,14 @@ export type AuthorizationType =
 export interface StorageAuthorization {
   type: AuthorizationType;
   sender: string;              // Ethereum address
-  signature: string;           // EIP-191 signature
+  signature: string;           // EIP-191 signature of (contentHash + appId + contentType + timestamp + nonce)
   timestamp: number;           // Unix timestamp (ms)
   nonce: string;               // Random nonce for replay protection
   contentHash: string;         // keccak256(ciphertext)
+  
+  // Application identity (v2)
+  appId: string;               // keccak256(appName) - which app is storing this
+  contentType: string;         // Application-defined content type
   
   // Type-specific context
   groupPostsAddress?: string;  // For group_post, group_comment
@@ -854,6 +864,9 @@ export interface StorageAuthorization {
   threadId?: string;           // For message (bytes32 hex)
   participants?: string[];     // For message (sorted addresses)
   tokenAddress?: string;       // For token_distribution
+  
+  // Additional metadata for application use
+  metadata?: Record<string, any>;
 }
 
 export interface AuthorizedStoreRequest {

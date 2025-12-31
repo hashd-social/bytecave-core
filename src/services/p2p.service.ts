@@ -485,6 +485,7 @@ async start(): Promise<void> {
     try {
       const announcement = {
         peerId: this.node.peerId.toString(),
+        nodeId: config.nodeId, // Add nodeId for identification
         httpEndpoint: config.nodeUrl,
         contentTypes: config.contentFilter.types || 'all',
         availableStorage: config.gcMaxStorageMB * 1024 * 1024,
@@ -498,6 +499,7 @@ async start(): Promise<void> {
       );
 
       logger.info('Published P2P announcement', { 
+        nodeId: announcement.nodeId,
         peerId: announcement.peerId.slice(0, 16) + '...',
         httpEndpoint: announcement.httpEndpoint 
       });

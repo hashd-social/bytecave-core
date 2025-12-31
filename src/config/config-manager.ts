@@ -16,6 +16,7 @@ export interface PersistedConfig {
   // Node Configuration
   nodeId?: string;
   port?: number;
+  nodeUrl?: string;
   
   // Storage Configuration
   maxStorageMB?: number;
@@ -23,6 +24,14 @@ export interface PersistedConfig {
   
   // Content Filtering
   contentTypes?: string;
+  
+  // Identity
+  publicKey?: string;
+  ownerAddress?: string;
+  
+  // Sharding
+  shardCount?: number;
+  nodeShards?: Array<{ start: number; end: number }>;
   
   // Last updated timestamp
   lastUpdated?: number;
