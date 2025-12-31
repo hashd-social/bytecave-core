@@ -87,9 +87,7 @@ export async function nodeInfoHandler(_req: Request, res: Response): Promise<voi
         'feeds'
       ],
       // Content type filtering
-      contentTypes: config.contentFilter.types,
-      allowedGuilds: config.contentFilter.allowedGuilds,
-      blockedGuilds: config.contentFilter.blockedGuilds,
+      // Content filtering removed - nodes accept all content in shard range
       storageCapacity: config.gcMaxStorageMB * 1024 * 1024,
       storageUsed: stats.totalSize,
       loadFactor: Math.min(1, loadFactor),

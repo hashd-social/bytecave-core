@@ -9,29 +9,57 @@ import fs from 'fs';
 import path from 'path';
 
 export interface PersistedConfig {
-  // P2P Configuration
-  p2pBootstrapPeers: string[];
-  p2pRelayPeers: string[];
-  
   // Node Configuration
   nodeId?: string;
   port?: number;
   nodeUrl?: string;
   
-  // Storage Configuration
-  maxStorageMB?: number;
-  dataDir?: string;
-  
-  // Content Filtering
-  contentTypes?: string;
-  
   // Identity
   publicKey?: string;
   ownerAddress?: string;
   
+  // P2P Configuration
+  p2pBootstrapPeers: string[];
+  p2pRelayPeers: string[];
+  
   // Sharding
   shardCount?: number;
   nodeShards?: Array<{ start: number; end: number }>;
+  
+  // Garbage Collection
+  gcEnabled?: boolean;
+  gcRetentionMode?: 'size' | 'time' | 'hybrid';
+  gcMaxStorageMB?: number;
+  gcMaxBlobAgeDays?: number;
+  gcMinFreeDiskMB?: number;
+  gcReservedForPinnedMB?: number;
+  gcIntervalMinutes?: number;
+  gcVerifyReplicas?: boolean;
+  gcVerifyProofs?: boolean;
+  
+  // Storage Configuration
+  maxStorageMB?: number;
+  dataDir?: string;
+  maxBlobSizeMB?: number;
+  maxStorageGB?: number;
+  
+  // Replication Configuration
+  replicationEnabled?: boolean;
+  replicationTimeoutMs?: number;
+  replicationFactor?: number;
+  
+  // Security
+  enableBlockedContent?: boolean;
+  allowedApps?: string[];
+  requireAppRegistry?: boolean;
+  
+  // Performance
+  cacheSizeMB?: number;
+  compressionEnabled?: boolean;
+  
+  // Monitoring
+  metricsEnabled?: boolean;
+  logLevel?: string;
   
   // Last updated timestamp
   lastUpdated?: number;

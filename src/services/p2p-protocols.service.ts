@@ -23,13 +23,16 @@ export const PROTOCOL_HEALTH = '/bytecave/health/1.0.0';
 export const PROTOCOL_INFO = '/bytecave/info/1.0.0';
 export const PROTOCOL_HAVE_LIST = '/bytecave/have-list/1.0.0';
 
-// Message types for protocol communication
+// Message types for protocol communication (v2 - with application metadata)
 interface ReplicateRequest {
   cid: string;
   mimeType: string;
   ciphertext: string; // base64 encoded
+  appId?: string;
   contentType?: string;
-  guildId?: string;
+  sender?: string;
+  timestamp?: number;
+  metadata?: Record<string, any>;
 }
 
 interface ReplicateResponse {
@@ -57,7 +60,6 @@ export interface P2PHealthResponse {
   storageMax: number;
   uptime: number;
   version: string;
-  contentTypes: string[] | 'all';
   multiaddrs: string[];
 }
 
@@ -66,7 +68,6 @@ export interface P2PInfoResponse {
   publicKey: string;
   ownerAddress?: string;
   version: string;
-  contentTypes: string[] | 'all';
 }
 
 interface HaveListRequest {
@@ -234,10 +235,13 @@ class P2PProtocolsService {
         return;
       }
 
-      // All security checks passed - store the blob
+      // All security checks passed - store the blob with metadata
       await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
+        appId: request.appId,
         contentType: request.contentType,
-        guildId: request.guildId,
+        sender: request.sender,
+        timestamp: request.timestamp,
+        metadata: request.metadata,
         fromPeer: remotePeer
       });
 
@@ -320,7 +324,6 @@ class P2PProtocolsService {
         storageMax: config.gcMaxStorageMB * 1024 * 1024,
         uptime: Date.now() - this.startTime,
         version: '1.0.0',
-        contentTypes: config.contentFilter.types || 'all',
         multiaddrs
       };
 
@@ -346,8 +349,7 @@ class P2PProtocolsService {
         peerId: this.node?.peerId.toString() || '',
         publicKey: config.publicKey || '',
         ownerAddress: config.ownerAddress,
-        version: '1.0.0',
-        contentTypes: config.contentFilter.types || 'all'
+        version: '1.0.0'
       };
 
       await this.writeMessage(stream, response);
@@ -395,14 +397,20 @@ class P2PProtocolsService {
   // ============================================
 
   /**
-   * Replicate a blob to a peer via P2P stream
+   * Replicate a blob to a peer via P2P stream (v2 - with application metadata)
    */
   async replicateToPeer(
     peerId: string,
     cid: string,
     ciphertext: Buffer,
     mimeType: string,
-    options?: { contentType?: string; guildId?: string }
+    options?: { 
+      appId?: string;
+      contentType?: string;
+      sender?: string;
+      timestamp?: number;
+      metadata?: Record<string, any>;
+    }
   ): Promise<boolean> {
     if (!this.node) return false;
 
@@ -413,8 +421,11 @@ class P2PProtocolsService {
         cid,
         mimeType,
         ciphertext: ciphertext.toString('base64'),
+        appId: options?.appId,
         contentType: options?.contentType,
-        guildId: options?.guildId
+        sender: options?.sender,
+        timestamp: options?.timestamp,
+        metadata: options?.metadata
       };
 
       await this.writeMessage(stream, request);

@@ -98,14 +98,20 @@ export class ReplicationService {
   }
 
   /**
-   * Replicate to a single peer - tries P2P first, falls back to HTTP
+   * Replicate to a single peer - tries P2P first, falls back to HTTP (v2 - with metadata)
    */
   async replicateToPeer(
     peer: Peer,
     cid: string,
     ciphertext: Buffer,
     mimeType: string,
-    options?: { contentType?: string; guildId?: string }
+    options?: { 
+      appId?: string;
+      contentType?: string;
+      sender?: string;
+      timestamp?: number;
+      metadata?: Record<string, any>;
+    }
   ): Promise<boolean> {
     const startTime = Date.now();
 
@@ -143,8 +149,11 @@ export class ReplicationService {
         ciphertext: ciphertext.toString('base64'),
         mimeType,
         fromPeer: config.nodeUrl,
+        appId: options?.appId,
         contentType: options?.contentType,
-        guildId: options?.guildId
+        sender: options?.sender,
+        timestamp: options?.timestamp,
+        metadata: options?.metadata
       };
 
       const controller = new AbortController();

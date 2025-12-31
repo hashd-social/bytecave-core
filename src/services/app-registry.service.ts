@@ -13,14 +13,16 @@ import { logger } from '../utils/logger.js';
 
 const APP_REGISTRY_ABI = [
   'function isAuthorized(bytes32 appId, address sender) external view returns (bool)',
-  'function getApp(bytes32 appId) external view returns (string appName, address owner, bool active, uint256 registeredAt)',
-  'function computeAppId(string appName) external pure returns (bytes32)'
+  'function getApp(bytes32 appId) external view returns (string appName, address owner, bool active, uint256 registeredAt, uint256 burnedAmount)',
+  'function computeAppId(string appName) external pure returns (bytes32)',
+  'function getBurnAmount() external view returns (uint256)',
+  'function getTotalBurned() external view returns (uint256)',
+  'function getHashdToken() external view returns (address)'
 ];
 
 class AppRegistryService {
   private provider: ethers.JsonRpcProvider | null = null;
   private contract: ethers.Contract | null = null;
-  private contractAddress: string | null = null;
 
   /**
    * Initialize the service with RPC provider and contract address
@@ -28,7 +30,6 @@ class AppRegistryService {
   async initialize(rpcUrl: string, contractAddress: string): Promise<void> {
     try {
       this.provider = new ethers.JsonRpcProvider(rpcUrl);
-      this.contractAddress = contractAddress;
       this.contract = new ethers.Contract(contractAddress, APP_REGISTRY_ABI, this.provider);
       
       logger.info('AppRegistry service initialized', { contractAddress });
@@ -81,6 +82,7 @@ class AppRegistryService {
     owner: string;
     active: boolean;
     registeredAt: number;
+    burnedAmount: bigint;
   } | null> {
     if (!this.contract) {
       logger.warn('AppRegistry not initialized');
@@ -88,7 +90,7 @@ class AppRegistryService {
     }
 
     try {
-      const [appName, owner, active, registeredAt] = await this.contract.getApp(appId);
+      const [appName, owner, active, registeredAt, burnedAmount] = await this.contract.getApp(appId);
       
       // If owner is zero address, app doesn't exist
       if (owner === ethers.ZeroAddress) {
@@ -99,13 +101,50 @@ class AppRegistryService {
         appName,
         owner,
         active,
-        registeredAt: Number(registeredAt)
+        registeredAt: Number(registeredAt),
+        burnedAmount
       };
     } catch (error: any) {
       logger.error('Failed to get app from AppRegistry', { 
         appId: appId.slice(0, 16) + '...',
         error: error.message 
       });
+      return null;
+    }
+  }
+
+  /**
+   * Get the current burn amount required for registration
+   */
+  async getBurnAmount(): Promise<bigint | null> {
+    if (!this.contract) {
+      logger.warn('AppRegistry not initialized');
+      return null;
+    }
+
+    try {
+      const burnAmount = await this.contract.getBurnAmount();
+      return burnAmount;
+    } catch (error: any) {
+      logger.error('Failed to get burn amount from AppRegistry', { error: error.message });
+      return null;
+    }
+  }
+
+  /**
+   * Get total $HASHD burned through registrations
+   */
+  async getTotalBurned(): Promise<bigint | null> {
+    if (!this.contract) {
+      logger.warn('AppRegistry not initialized');
+      return null;
+    }
+
+    try {
+      const totalBurned = await this.contract.getTotalBurned();
+      return totalBurned;
+    } catch (error: any) {
+      logger.error('Failed to get total burned from AppRegistry', { error: error.message });
       return null;
     }
   }

@@ -23,7 +23,6 @@ import {
   AuthorizedStoreResponse,
   StorageAuthorization
 } from '../types/index.js';
-import { normalizeContentType, extractGuildId } from '../middleware/content-filter.middleware.js';
 
 /**
  * Validate the authorization object structure
@@ -125,35 +124,44 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
     }
 
     // Check if THIS node is registered in VaultNodeRegistry
-    if (config.publicKey) {
-      try {
-        const { contractIntegrationService } = await import('../services/contract-integration.service.js');
-        const nodeId = ethers.keccak256(config.publicKey);
-        const isNodeRegistered = await contractIntegrationService.isNodeActive(nodeId);
+    // SECURITY: Node MUST have publicKey configured to accept storage
+    if (!config.publicKey) {
+      logger.error('Storage rejected: Node publicKey not configured');
+      res.status(503).json({
+        error: 'NODE_NOT_CONFIGURED',
+        message: 'This storage node is not properly configured (missing publicKey)',
+        timestamp: Date.now()
+      });
+      return;
+    }
 
-        if (!isNodeRegistered) {
-          logger.warn('Storage rejected: This node is not registered in VaultNodeRegistry', { 
-            nodeId: nodeId.slice(0, 16) + '...',
-            sender: authorization.sender 
-          });
-          res.status(503).json({
-            error: 'NODE_NOT_REGISTERED',
-            message: 'This storage node is not registered in the VaultNodeRegistry',
-            timestamp: Date.now()
-          });
-          return;
-        }
+    try {
+      const { contractIntegrationService } = await import('../services/contract-integration.service.js');
+      const nodeId = ethers.keccak256(config.publicKey);
+      const isNodeRegistered = await contractIntegrationService.isNodeActive(nodeId);
 
-        logger.debug('✅ Node registration verified', { nodeId: nodeId.slice(0, 16) + '...' });
-      } catch (error: any) {
-        logger.error('Failed to verify node registration', { error: error.message });
+      if (!isNodeRegistered) {
+        logger.warn('Storage rejected: This node is not registered in VaultNodeRegistry', { 
+          nodeId: nodeId.slice(0, 16) + '...',
+          sender: authorization.sender 
+        });
         res.status(503).json({
-          error: 'REGISTRATION_CHECK_FAILED',
-          message: 'Unable to verify node registration status',
+          error: 'NODE_NOT_REGISTERED',
+          message: 'This storage node is not registered in the VaultNodeRegistry',
           timestamp: Date.now()
         });
         return;
       }
+
+      logger.debug('✅ Node registration verified', { nodeId: nodeId.slice(0, 16) + '...' });
+    } catch (error: any) {
+      logger.error('Failed to verify node registration', { error: error.message });
+      res.status(503).json({
+        error: 'REGISTRATION_CHECK_FAILED',
+        message: 'Unable to verify node registration status',
+        timestamp: Date.now()
+      });
+      return;
     }
 
     // Generate CID
@@ -192,14 +200,13 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Extract content type and guild ID for policy tracking
-    const contentType = normalizeContentType(authorization.type) || undefined;
-    const guildId = extractGuildId(authorization) || undefined;
-
-    // Store blob locally with content metadata
+    // Store blob locally with application metadata (v2)
     await storageService.storeBlob(cid, ciphertextBuffer, mimeType, {
-      contentType,
-      guildId
+      appId: authorization.appId,
+      contentType: authorization.contentType,
+      sender: authorization.sender,
+      timestamp: authorization.timestamp,
+      metadata: authorization.metadata
     });
 
     // Replicate to peers (async, don't wait)

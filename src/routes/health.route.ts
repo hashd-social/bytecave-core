@@ -226,7 +226,7 @@ export async function getPeers(_req: Request, res: Response): Promise<void> {
       .map(peer => ({
         peerId: peer.peerId,
         httpEndpoint: peer.httpEndpoint,
-        contentTypes: peer.contentTypes,
+        // contentTypes removed - nodes accept all content in shard range
         connected: true,
         lastSeen: peer.lastSeen,
         reputation: peer.reputation

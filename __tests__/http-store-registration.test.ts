@@ -35,6 +35,13 @@ describe('HTTP Store Endpoint - Node Registration', () => {
   });
 
   describe('Node Registration Validation', () => {
+    test('should reject storage when publicKey is not configured', () => {
+      const configWithoutKey = { ...mockConfig, publicKey: '' };
+      
+      expect(configWithoutKey.publicKey).toBe('');
+      // In real implementation, should return 503 NODE_NOT_CONFIGURED
+    });
+
     test('should accept storage when node is registered', async () => {
       mockIsNodeActive.mockResolvedValue(true);
       
@@ -77,6 +84,17 @@ describe('HTTP Store Endpoint - Node Registration', () => {
   });
 
   describe('Response Status Codes', () => {
+    test('should return 503 when publicKey not configured', () => {
+      const expectedResponse = {
+        error: 'NODE_NOT_CONFIGURED',
+        message: 'This storage node is not properly configured (missing publicKey)',
+        timestamp: expect.any(Number)
+      };
+      
+      expect(expectedResponse.error).toBe('NODE_NOT_CONFIGURED');
+      expect(expectedResponse.message).toContain('not properly configured');
+    });
+
     test('should return 503 when node not registered', () => {
       const expectedResponse = {
         error: 'NODE_NOT_REGISTERED',

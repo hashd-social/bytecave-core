@@ -40,10 +40,12 @@ const MESSAGE_STORAGE_ABI = [
 //   'function distributions(uint256 distributionId) view returns (tuple(address token, string metadataCID, uint256 timestamp, bool exists))'
 // ];
 
-// Signature message format
+// Signature message format (v2 - includes appId and contentType)
 const SIGNATURE_MESSAGE_TEMPLATE = `HASHD Vault Storage Request
 Type: {type}
 Content Hash: {contentHash}
+App ID: {appId}
+Content Type: {contentType}
 Context: {context}
 Timestamp: {timestamp}
 Nonce: {nonce}`;
@@ -214,7 +216,91 @@ export class StorageAuthorizationService {
       };
     }
 
-    // 2. Verify timestamp is within tolerance
+    // 2. Verify appId and contentType are present (v2 requirement)
+    if (!authorization.appId || !authorization.contentType) {
+      return {
+        authorized: false,
+        error: 'appId and contentType are required',
+        details: {
+          hasAppId: !!authorization.appId,
+          hasContentType: !!authorization.contentType
+        }
+      };
+    }
+
+    // 3. Verify sender is authorized for this appId (AppRegistry check)
+    const { appRegistryService } = await import('./app-registry.service.js');
+    const { config } = await import('../config/index.js');
+    
+    if (!appRegistryService.isInitialized()) {
+      // If AppRegistry is required but not initialized, reject the request
+      if (config.requireAppRegistry) {
+        logger.error('AppRegistry not initialized but is required by node config');
+        return {
+          authorized: false,
+          error: 'AppRegistry validation required but service not initialized',
+          details: {
+            requireAppRegistry: config.requireAppRegistry
+          }
+        };
+      }
+      logger.warn('AppRegistry not initialized, skipping appId validation (requireAppRegistry=false)');
+    } else {
+      // Verify the app is registered and sender is authorized
+      const isAuthorized = await appRegistryService.isAuthorized(
+        authorization.appId,
+        authorization.sender
+      );
+      
+      if (!isAuthorized) {
+        logger.warn('AppRegistry authorization failed', {
+          appId: authorization.appId.slice(0, 16) + '...',
+          sender: authorization.sender
+        });
+        return {
+          authorized: false,
+          error: 'Sender not authorized for this appId or app not registered',
+          details: {
+            appId: authorization.appId,
+            sender: authorization.sender
+          }
+        };
+      }
+      logger.debug('✅ AppRegistry authorization verified', {
+        appId: authorization.appId.slice(0, 16) + '...',
+        sender: authorization.sender
+      });
+    }
+    
+    // 3b. Check if this node accepts storage for this app (node-level filtering)
+    if (config.allowedApps.length > 0) {
+      // Extract app name from appId (format: "hashd" or full hash)
+      // For now, we'll use the appId directly for comparison
+      const appName = authorization.appId.toLowerCase();
+      const isAllowed = config.allowedApps.some(allowed => 
+        appName.includes(allowed.toLowerCase()) || allowed === '*'
+      );
+      
+      if (!isAllowed) {
+        logger.warn('App not in node allowedApps list', {
+          appId: authorization.appId,
+          allowedApps: config.allowedApps
+        });
+        return {
+          authorized: false,
+          error: 'This node does not accept storage for this app',
+          details: {
+            appId: authorization.appId,
+            allowedApps: config.allowedApps
+          }
+        };
+      }
+      logger.debug('✅ App allowed by node config', {
+        appId: authorization.appId.slice(0, 16) + '...'
+      });
+    }
+
+    // 4. Verify timestamp is within tolerance
     const now = Date.now();
     if (Math.abs(now - authorization.timestamp) > this.TIMESTAMP_TOLERANCE_MS) {
       return {
@@ -228,7 +314,7 @@ export class StorageAuthorizationService {
       };
     }
 
-    // 3. Verify content hash matches
+    // 5. Verify content hash matches
     if (authorization.contentHash.toLowerCase() !== actualContentHash.toLowerCase()) {
       return {
         authorized: false,
@@ -240,7 +326,7 @@ export class StorageAuthorizationService {
       };
     }
 
-    // 4. Check nonce hasn't been used (replay protection)
+    // 6. Check nonce hasn't been used (replay protection)
     const nonceKey = `${authorization.sender}:${authorization.nonce}`;
     if (this.usedNonces.has(nonceKey)) {
       return {
@@ -249,7 +335,7 @@ export class StorageAuthorizationService {
       };
     }
 
-    // 5. Verify signature
+    // 7. Verify signature (includes appId and contentType)
     const signatureValid = this.verifySignature(authorization);
     if (!signatureValid) {
       return {
@@ -258,13 +344,13 @@ export class StorageAuthorizationService {
       };
     }
 
-    // 6. Verify on-chain authorization based on type
+    // 8. Verify on-chain authorization based on type
     const onChainResult = await this.verifyOnChainAuthorization(authorization);
     if (!onChainResult.authorized) {
       return onChainResult;
     }
 
-    // 7. Record nonce as used
+    // 9. Record nonce as used
     this.usedNonces.set(nonceKey, Date.now());
 
     return {
@@ -274,7 +360,7 @@ export class StorageAuthorizationService {
   }
 
   /**
-   * Verify the EIP-191 signature
+   * Verify the EIP-191 signature (v2 - includes appId and contentType)
    */
   private verifySignature(authorization: StorageAuthorization): boolean {
     try {
@@ -282,6 +368,8 @@ export class StorageAuthorizationService {
       const message = SIGNATURE_MESSAGE_TEMPLATE
         .replace('{type}', authorization.type)
         .replace('{contentHash}', authorization.contentHash)
+        .replace('{appId}', authorization.appId)
+        .replace('{contentType}', authorization.contentType)
         .replace('{context}', context)
         .replace('{timestamp}', authorization.timestamp.toString())
         .replace('{nonce}', authorization.nonce);

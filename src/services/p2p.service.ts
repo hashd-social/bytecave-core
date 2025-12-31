@@ -38,7 +38,6 @@ export interface P2PPeerInfo {
   peerId: string;
   multiaddrs: string[];
   httpEndpoint?: string;
-  contentTypes: string[] | 'all';
   latency?: number;
   lastSeen: number;
   reputation: number;
@@ -272,7 +271,6 @@ async start(): Promise<void> {
       this.knownPeers.set(peerId, {
         peerId,
         multiaddrs: addrs,
-        contentTypes: existing?.contentTypes || 'all',
         lastSeen: Date.now(),
         reputation: existing?.reputation || 100
       });
@@ -441,7 +439,6 @@ async start(): Promise<void> {
   private handleAnnouncement(announcement: {
     peerId: string;
     httpEndpoint?: string;
-    contentTypes: string[] | 'all';
     availableStorage: number;
     blobCount: number;
   }): void {
@@ -451,7 +448,6 @@ async start(): Promise<void> {
       peerId: announcement.peerId,
       multiaddrs: existing?.multiaddrs || [],
       httpEndpoint: announcement.httpEndpoint,
-      contentTypes: announcement.contentTypes,
       lastSeen: Date.now(),
       reputation: existing?.reputation || 100
     };
@@ -461,8 +457,7 @@ async start(): Promise<void> {
 
     logger.debug('Received peer announcement', {
       peerId: announcement.peerId,
-      httpEndpoint: announcement.httpEndpoint,
-      contentTypes: announcement.contentTypes
+      httpEndpoint: announcement.httpEndpoint
     });
   }
 
@@ -487,7 +482,6 @@ async start(): Promise<void> {
         peerId: this.node.peerId.toString(),
         nodeId: config.nodeId, // Add nodeId for identification
         httpEndpoint: config.nodeUrl,
-        contentTypes: config.contentFilter.types || 'all',
         availableStorage: config.gcMaxStorageMB * 1024 * 1024,
         blobCount: 0, // Will be updated by storage service
         timestamp: Date.now()
@@ -532,13 +526,10 @@ async start(): Promise<void> {
   }
 
   /**
-   * Get peers that accept a specific content type
+   * Get all known peers (content-type filtering removed)
    */
-  getPeersForContentType(contentType: string): P2PPeerInfo[] {
-    return Array.from(this.knownPeers.values()).filter(peer => {
-      if (peer.contentTypes === 'all') return true;
-      return peer.contentTypes.includes(contentType);
-    });
+  getAllPeers(): P2PPeerInfo[] {
+    return Array.from(this.knownPeers.values());
   }
 
   /**

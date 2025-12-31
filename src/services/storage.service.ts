@@ -6,10 +6,16 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import zlib from 'zlib';
+import { promisify } from 'util';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { generateMetadataIntegrityHash, verifyMetadataIntegrity } from '../utils/cid.js';
 import { BlobMetadata, BlobNotFoundError, StorageFullError } from '../types/index.js';
+import { cacheService } from './cache.service.js';
+
+const gzip = promisify(zlib.gzip);
+const gunzip = promisify(zlib.gunzip);
 
 export class StorageService {
   private blobsDir: string;
@@ -114,7 +120,7 @@ export class StorageService {
   }
 
   /**
-   * Store a blob
+   * Store a blob with application metadata (v2)
    */
   async storeBlob(
     cid: string,
@@ -122,8 +128,11 @@ export class StorageService {
     mimeType: string,
     options?: { 
       fromPeer?: string;
+      appId?: string;
       contentType?: string;
-      guildId?: string;
+      sender?: string;
+      timestamp?: number;
+      metadata?: Record<string, any>;
     }
   ): Promise<void> {
     await this.ensureInitialized();
@@ -140,24 +149,51 @@ export class StorageService {
     }
 
     try {
+      // Compress if enabled
+      let dataToStore = ciphertext;
+      let compressed = false;
+      
+      if (config.compressionEnabled) {
+        try {
+          const compressedData = await gzip(ciphertext);
+          // Only use compression if it actually reduces size
+          if (compressedData.length < ciphertext.length) {
+            dataToStore = compressedData;
+            compressed = true;
+            logger.debug('Blob compressed', { 
+              cid, 
+              originalSize: ciphertext.length, 
+              compressedSize: compressedData.length,
+              ratio: Math.round((compressedData.length / ciphertext.length) * 100) + '%'
+            });
+          }
+        } catch (err) {
+          logger.warn('Compression failed, storing uncompressed', { cid, error: err });
+        }
+      }
+
       // Write blob atomically (temp file + rename)
       const tempPath = `${blobPath}.tmp`;
-      await fs.writeFile(tempPath, ciphertext);
+      await fs.writeFile(tempPath, dataToStore);
       await fs.rename(tempPath, blobPath);
 
-      // Create metadata
+      // Create metadata (v2 - with application metadata)
       const createdAt = Date.now();
       const metadata: BlobMetadata = {
         cid,
         size: ciphertext.length,
         mimeType,
         createdAt,
-        version: 3, // Schema version (3 = with content type)
+        version: 2, // Schema version (2 = with appId metadata)
+        compressed, // Track if blob is compressed
         // SECURITY: Generate integrity hash to detect metadata tampering
         integrityHash: generateMetadataIntegrityHash(cid, ciphertext.length, mimeType, createdAt, false),
-        // Content policy tracking
+        // Application metadata (v2)
+        appId: options?.appId,
         contentType: options?.contentType,
-        guildId: options?.guildId,
+        sender: options?.sender,
+        timestamp: options?.timestamp,
+        metadata: options?.metadata,
         replication: options?.fromPeer ? {
           fromPeer: options.fromPeer,
           replicatedAt: Date.now(),
@@ -192,16 +228,45 @@ export class StorageService {
   async getBlob(cid: string): Promise<{ ciphertext: Buffer; metadata: BlobMetadata }> {
     await this.ensureInitialized();
 
+    // Check cache first
+    const cached = cacheService.get(cid);
+    if (cached) {
+      const metaPath = this.getMetaPath(cid);
+      const metaContent = await fs.readFile(metaPath, 'utf-8');
+      const metadata: BlobMetadata = JSON.parse(metaContent);
+      
+      // Update access metrics
+      this.updateAccessMetrics(cid, metadata).catch(err => 
+        logger.warn('Failed to update access metrics', { cid, error: err.message })
+      );
+      
+      return { ciphertext: cached, metadata };
+    }
+
     const blobPath = this.getBlobPath(cid);
     const metaPath = this.getMetaPath(cid);
 
     try {
-      const [ciphertext, metaContent] = await Promise.all([
+      const [storedData, metaContent] = await Promise.all([
         fs.readFile(blobPath),
         fs.readFile(metaPath, 'utf-8')
       ]);
 
       const metadata: BlobMetadata = JSON.parse(metaContent);
+
+      // Decompress if needed
+      let ciphertext = storedData;
+      if (metadata.compressed) {
+        try {
+          ciphertext = await gunzip(storedData);
+        } catch (err) {
+          logger.error('Decompression failed', { cid, error: err });
+          throw new Error('Failed to decompress blob');
+        }
+      }
+
+      // Cache the uncompressed data
+      cacheService.set(cid, ciphertext);
 
       // Update access metrics
       this.updateAccessMetrics(cid, metadata).catch(err => 
@@ -243,6 +308,9 @@ export class StorageService {
     const metaPath = this.getMetaPath(cid);
 
     try {
+      // Remove from cache
+      cacheService.delete(cid);
+      
       await Promise.all([
         fs.unlink(blobPath),
         fs.unlink(metaPath)
@@ -400,27 +468,78 @@ export class StorageService {
   /**
    * Get storage statistics
    */
-  async getStats(): Promise<{ blobCount: number; totalSize: number }> {
+  async getStats(): Promise<{ blobCount: number; totalSize: number; pinnedCount?: number; pinnedSize?: number }> {
     await this.ensureInitialized();
 
     try {
       const files = await fs.readdir(this.blobsDir);
       let totalSize = 0;
+      let pinnedCount = 0;
+      let pinnedSize = 0;
 
       for (const file of files) {
         if (file.endsWith('.tmp')) continue;
         const filePath = path.join(this.blobsDir, file);
         const stats = await fs.stat(filePath);
         totalSize += stats.size;
+        
+        // Check if pinned
+        const cid = file.replace('.enc', '');
+        try {
+          const metadata = await this.getMetadata(cid);
+          if (metadata.pinned) {
+            pinnedCount++;
+            pinnedSize += stats.size;
+          }
+        } catch {
+          // Ignore metadata read errors
+        }
       }
 
       return {
         blobCount: files.filter(f => !f.endsWith('.tmp')).length,
-        totalSize
+        totalSize,
+        pinnedCount,
+        pinnedSize
       };
     } catch (error) {
       logger.error('Failed to get storage stats', error);
-      return { blobCount: 0, totalSize: 0 };
+      return { blobCount: 0, totalSize: 0, pinnedCount: 0, pinnedSize: 0 };
+    }
+  }
+
+  /**
+   * Get free disk space in bytes
+   */
+  async getFreeDiskSpace(): Promise<number> {
+    await this.ensureInitialized();
+    
+    try {
+      // Use Node.js fs.statfs (available in Node 18+) or fallback to platform-specific commands
+      const { statfs } = await import('fs/promises');
+      const stats = await (statfs as any)(config.dataDir);
+      return stats.bavail * stats.bsize; // Available blocks * block size
+    } catch (error) {
+      // Fallback: use platform-specific command
+      const { exec } = await import('child_process');
+      const { promisify } = await import('util');
+      const execAsync = promisify(exec);
+      
+      try {
+        if (process.platform === 'win32') {
+          // Windows: use wmic
+          const { stdout } = await execAsync(`wmic logicaldisk where "DeviceID='${config.dataDir.charAt(0)}:'" get FreeSpace`);
+          const match = stdout.match(/\d+/);
+          return match ? parseInt(match[0]) : 0;
+        } else {
+          // Unix/Linux/Mac: use df
+          const { stdout } = await execAsync(`df -k "${config.dataDir}" | tail -1 | awk '{print $4}'`);
+          return parseInt(stdout.trim()) * 1024; // Convert KB to bytes
+        }
+      } catch (cmdError) {
+        logger.warn('Failed to get free disk space', cmdError);
+        return 0;
+      }
     }
   }
 

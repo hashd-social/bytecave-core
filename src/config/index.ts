@@ -3,7 +3,7 @@
  */
 
 import dotenv from 'dotenv';
-import { Config, ContentType, ContentFilterConfig } from '../types/index.js';
+import { Config } from '../types/index.js';
 import { getConfigManager } from './config-manager.js';
 
 dotenv.config();
@@ -47,75 +47,8 @@ function getEnvArray(key: string, defaultValue: string[] = []): string[] {
   return value.split(',').map(v => v.trim()).filter(v => v.length > 0);
 }
 
-/**
- * Load guild filter configuration from config/guilds.json
- */
-function loadGuildConfig(): { allowedGuilds: 'all' | string[]; blockedGuilds: string[] } {
-  try {
-    const fs = require('fs');
-    const path = require('path');
-    const configPath = path.join(__dirname, '../../config/guilds.json');
-    const data = fs.readFileSync(configPath, 'utf8');
-    const config = JSON.parse(data);
-    
-    // Validate and normalize allowedGuilds
-    let allowedGuilds: 'all' | string[];
-    if (config.allowedGuilds === 'all' || !config.allowedGuilds) {
-      allowedGuilds = 'all';
-    } else if (Array.isArray(config.allowedGuilds)) {
-      allowedGuilds = config.allowedGuilds.map((g: any) => String(g));
-      if (allowedGuilds.length === 0) {
-        allowedGuilds = 'all';
-      }
-    } else {
-      allowedGuilds = 'all';
-    }
-    
-    // Validate and normalize blockedGuilds
-    const blockedGuilds = Array.isArray(config.blockedGuilds) 
-      ? config.blockedGuilds.map((g: any) => String(g))
-      : [];
-    
-    return { allowedGuilds, blockedGuilds };
-  } catch (error) {
-    console.warn('⚠️ Could not load config/guilds.json, using defaults (all guilds allowed)');
-    return { allowedGuilds: 'all', blockedGuilds: [] };
-  }
-}
-
-/**
- * Parse content filter configuration
- * 
- * CONTENT_TYPES (env): Comma-separated list of content types to accept
- *   - 'all' = accept everything (default)
- *   - 'messages,posts,media,listings' = accept specific types
- * 
- * Guild filtering is loaded from config/guilds.json:
- *   - allowedGuilds: 'all' or array of guild IDs
- *   - blockedGuilds: array of guild IDs to block (takes precedence)
- */
-function parseContentFilter(): ContentFilterConfig {
-  const typesEnv = process.env.CONTENT_TYPES?.toLowerCase().trim();
-  
-  // Parse content types from env
-  let types: 'all' | ContentType[];
-  if (!typesEnv || typesEnv === 'all') {
-    types = 'all';
-  } else {
-    const validTypes: ContentType[] = ['messages', 'posts', 'media', 'listings'];
-    const parsed = typesEnv.split(',').map(t => t.trim()) as ContentType[];
-    types = parsed.filter(t => validTypes.includes(t));
-    if (types.length === 0) {
-      console.warn('⚠️ No valid CONTENT_TYPES specified, defaulting to "all"');
-      types = 'all';
-    }
-  }
-  
-  // Load guild config from JSON file
-  const { allowedGuilds, blockedGuilds } = loadGuildConfig();
-  
-  return { types, allowedGuilds, blockedGuilds };
-}
+// Content filtering removed - nodes now accept all content in their shard range
+// Content type is stored as metadata for application-level filtering
 
 // Initialize ConfigManager and load persisted config
 // First get the base data directory and nodeId
@@ -131,78 +64,136 @@ const dataDir = baseDataDir.endsWith(nodeId)
 const configManager = getConfigManager(dataDir);
 const persistedConfig = configManager.getConfig();
 
+// Helper function: config.json takes precedence over env vars
+// If a value exists in config.json, use it. Otherwise, use env var or default.
+function getConfigValue<T>(persistedValue: T | undefined, envValue: T): T {
+  return persistedValue !== undefined ? persistedValue : envValue;
+}
+
 export const config: Config = {
   // Node identification
   nodeEnv: process.env.NODE_ENV || 'development',
-  nodeId: persistedConfig.nodeId || nodeId,
-  port: parseInt(process.env.PORT || String(persistedConfig.port || 3004)),
-  nodeUrl: process.env.NODE_URL || 'http://localhost:3004',
+  nodeId: getConfigValue(persistedConfig.nodeId, nodeId),
+  port: getConfigValue(persistedConfig.port, getEnvNumber('PORT', 3004)),
+  nodeUrl: getConfigValue(persistedConfig.nodeUrl, getEnv('NODE_URL', 'http://localhost:3004')),
   
   // Node identity for P2P and registration
-  publicKey: process.env.PUBLIC_KEY || '',
-  ownerAddress: process.env.OWNER_ADDRESS || '',
+  publicKey: getConfigValue(persistedConfig.publicKey, process.env.PUBLIC_KEY || ''),
+  ownerAddress: getConfigValue(persistedConfig.ownerAddress, process.env.OWNER_ADDRESS || ''),
 
-  // P2P Configuration - merge env vars with persisted config
+  // P2P Configuration - config.json takes precedence
   p2pEnabled: getEnvBoolean('P2P_ENABLED', true),
   p2pListenAddresses: getEnvArray('P2P_LISTEN_ADDRESSES', ['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/tcp/4002/ws']),
-  p2pBootstrapPeers: getEnvArray('P2P_BOOTSTRAP_PEERS', persistedConfig.p2pBootstrapPeers || []),
-  p2pRelayPeers: getEnvArray('P2P_RELAY_PEERS', persistedConfig.p2pRelayPeers || []),
+  p2pBootstrapPeers: persistedConfig.p2pBootstrapPeers.length > 0 
+    ? persistedConfig.p2pBootstrapPeers 
+    : getEnvArray('P2P_BOOTSTRAP_PEERS', []),
+  p2pRelayPeers: persistedConfig.p2pRelayPeers.length > 0
+    ? persistedConfig.p2pRelayPeers
+    : getEnvArray('P2P_RELAY_PEERS', []),
   p2pEnableDHT: getEnvBoolean('P2P_ENABLE_DHT', true),
   p2pEnableMDNS: getEnvBoolean('P2P_ENABLE_MDNS', true),
   p2pEnableRelay: getEnvBoolean('P2P_ENABLE_RELAY', true),
 
-  // Sharding configuration (Requirement 7)
-  shardCount: parseInt(process.env.SHARD_COUNT || '1024'),
-  // Default: responsible for all shards (single-node mode) - use range format
-  nodeShards: process.env.NODE_SHARDS 
-    ? JSON.parse(process.env.NODE_SHARDS)
-    : [{ start: 0, end: 1023 }],
+  // Sharding configuration - config.json takes precedence
+  shardCount: getConfigValue(persistedConfig.shardCount, getEnvNumber('SHARD_COUNT', 1024)),
+  nodeShards: getConfigValue(
+    persistedConfig.nodeShards,
+    process.env.NODE_SHARDS ? JSON.parse(process.env.NODE_SHARDS) : [{ start: 0, end: 1023 }]
+  ),
 
-  // Content type filtering
-  contentFilter: parseContentFilter(),
+  // Garbage collection - config.json takes precedence
+  gcEnabled: getConfigValue(persistedConfig.gcEnabled, getEnvBoolean('GC_ENABLED', true)),
+  gcRetentionMode: getConfigValue(persistedConfig.gcRetentionMode, (process.env.GC_RETENTION_MODE || 'hybrid') as 'size' | 'time' | 'hybrid'),
+  gcMaxStorageMB: getConfigValue(persistedConfig.gcMaxStorageMB, getEnvNumber('GC_MAX_STORAGE_MB', 5000)),
+  gcMaxBlobAgeDays: getConfigValue(persistedConfig.gcMaxBlobAgeDays, getEnvNumber('GC_MAX_BLOB_AGE_DAYS', 30)),
+  gcMinFreeDiskMB: getConfigValue(persistedConfig.gcMinFreeDiskMB, getEnvNumber('GC_MIN_FREE_DISK_MB', 1000)),
+  gcReservedForPinnedMB: getConfigValue(persistedConfig.gcReservedForPinnedMB, getEnvNumber('GC_RESERVED_FOR_PINNED_MB', 1000)),
+  gcIntervalMinutes: getConfigValue(persistedConfig.gcIntervalMinutes, getEnvNumber('GC_INTERVAL_MINUTES', 10)),
+  gcVerifyReplicas: getConfigValue(persistedConfig.gcVerifyReplicas, getEnvBoolean('GC_VERIFY_REPLICAS', true)),
+  gcVerifyProofs: getConfigValue(persistedConfig.gcVerifyProofs, getEnvBoolean('GC_VERIFY_PROOFS', false)),
 
-  // Garbage collection configuration (Requirement 8)
-  gcEnabled: getEnvBoolean('GC_ENABLED', true),
-  gcRetentionMode: (process.env.GC_RETENTION_MODE || 'hybrid') as 'size' | 'time' | 'hybrid',
-  gcMaxStorageMB: getEnvNumber('GC_MAX_STORAGE_MB', 5000),
-  gcMaxBlobAgeDays: getEnvNumber('GC_MAX_BLOB_AGE_DAYS', 30),
-  gcMinFreeDiskMB: getEnvNumber('GC_MIN_FREE_DISK_MB', 1000),
-  gcReservedForPinnedMB: getEnvNumber('GC_RESERVED_FOR_PINNED_MB', 1000),
-  gcIntervalMinutes: getEnvNumber('GC_INTERVAL_MINUTES', 10),
-  // SECURITY: Default to true to prevent data loss from tampered replication state
-  gcVerifyReplicas: getEnvBoolean('GC_VERIFY_REPLICAS', true),
-  gcVerifyProofs: getEnvBoolean('GC_VERIFY_PROOFS', false),
-
-  // Use the computed dataDir with nodeId subfolder
+  // Storage configuration - config.json takes precedence
   dataDir: dataDir,
-  maxBlobSizeMB: getEnvNumber('MAX_BLOB_SIZE_MB', 10),
-  maxStorageGB: getEnvNumber('MAX_STORAGE_GB', 100),
-  replicationEnabled: getEnvBoolean('REPLICATION_ENABLED', true),
-  replicationTimeoutMs: getEnvNumber('REPLICATION_TIMEOUT_MS', 5000),
-  replicationFactor: getEnvNumber('REPLICATION_FACTOR', 3),
-  enableBlockedContent: getEnvBoolean('ENABLE_BLOCKED_CONTENT', true),
-  cacheSizeMB: getEnvNumber('CACHE_SIZE_MB', 50),
-  compressionEnabled: getEnvBoolean('COMPRESSION_ENABLED', false),
-  metricsEnabled: getEnvBoolean('METRICS_ENABLED', true),
-  logLevel: getEnv('LOG_LEVEL', 'info'),
+  maxBlobSizeMB: getConfigValue(persistedConfig.maxBlobSizeMB, getEnvNumber('MAX_BLOB_SIZE_MB', 10)),
+  maxStorageGB: getConfigValue(persistedConfig.maxStorageGB, getEnvNumber('MAX_STORAGE_GB', 100)),
+  
+  // Replication - config.json takes precedence
+  replicationEnabled: getConfigValue(persistedConfig.replicationEnabled, getEnvBoolean('REPLICATION_ENABLED', true)),
+  replicationTimeoutMs: getConfigValue(persistedConfig.replicationTimeoutMs, getEnvNumber('REPLICATION_TIMEOUT_MS', 5000)),
+  replicationFactor: getConfigValue(persistedConfig.replicationFactor, getEnvNumber('REPLICATION_FACTOR', 3)),
+  
+  // Security - config.json takes precedence
+  enableBlockedContent: getConfigValue(persistedConfig.enableBlockedContent, getEnvBoolean('ENABLE_BLOCKED_CONTENT', true)),
+  allowedApps: getConfigValue(persistedConfig.allowedApps, getEnvArray('ALLOWED_APPS', ['hashd'])),
+  requireAppRegistry: getConfigValue(persistedConfig.requireAppRegistry, getEnvBoolean('REQUIRE_APP_REGISTRY', true)),
+  
+  // Performance - config.json takes precedence
+  cacheSizeMB: getConfigValue(persistedConfig.cacheSizeMB, getEnvNumber('CACHE_SIZE_MB', 50)),
+  compressionEnabled: getConfigValue(persistedConfig.compressionEnabled, getEnvBoolean('COMPRESSION_ENABLED', false)),
+  
+  // Monitoring - config.json takes precedence
+  metricsEnabled: getConfigValue(persistedConfig.metricsEnabled, getEnvBoolean('METRICS_ENABLED', true)),
+  logLevel: getConfigValue(persistedConfig.logLevel, getEnv('LOG_LEVEL', 'info')),
+  
   corsOrigin: getEnvArray('CORS_ORIGIN', ['http://localhost:3000'])
 };
 
 // Write complete config to config.json on startup
 // This ensures config.json is always a complete mirror of the running config
+// On first startup, this copies all env defaults to config.json
+// On subsequent startups, config.json values take precedence
 configManager.updateNodeConfig({
+  // Node Configuration
   nodeId: config.nodeId,
   port: config.port,
   nodeUrl: config.nodeUrl,
-  maxStorageMB: config.gcMaxStorageMB,
-  dataDir: config.dataDir,
-  contentTypes: config.contentFilter.types === 'all' ? 'all' : config.contentFilter.types.join(','),
+  
+  // Identity
   publicKey: config.publicKey,
   ownerAddress: config.ownerAddress,
+  
+  // P2P Configuration
+  p2pBootstrapPeers: config.p2pBootstrapPeers,
+  p2pRelayPeers: config.p2pRelayPeers,
+  
+  // Sharding
   shardCount: config.shardCount,
   nodeShards: config.nodeShards as Array<{ start: number; end: number }>,
-  p2pBootstrapPeers: config.p2pBootstrapPeers,
-  p2pRelayPeers: config.p2pRelayPeers
+  
+  // Garbage Collection
+  gcEnabled: config.gcEnabled,
+  gcRetentionMode: config.gcRetentionMode,
+  gcMaxStorageMB: config.gcMaxStorageMB,
+  gcMaxBlobAgeDays: config.gcMaxBlobAgeDays,
+  gcMinFreeDiskMB: config.gcMinFreeDiskMB,
+  gcReservedForPinnedMB: config.gcReservedForPinnedMB,
+  gcIntervalMinutes: config.gcIntervalMinutes,
+  gcVerifyReplicas: config.gcVerifyReplicas,
+  gcVerifyProofs: config.gcVerifyProofs,
+  
+  // Storage Configuration
+  maxStorageMB: config.gcMaxStorageMB,
+  dataDir: config.dataDir,
+  maxBlobSizeMB: config.maxBlobSizeMB,
+  maxStorageGB: config.maxStorageGB,
+  
+  // Replication Configuration
+  replicationEnabled: config.replicationEnabled,
+  replicationTimeoutMs: config.replicationTimeoutMs,
+  replicationFactor: config.replicationFactor,
+  
+  // Security
+  enableBlockedContent: config.enableBlockedContent,
+  allowedApps: config.allowedApps,
+  requireAppRegistry: config.requireAppRegistry,
+  
+  // Performance
+  cacheSizeMB: config.cacheSizeMB,
+  compressionEnabled: config.compressionEnabled,
+  
+  // Monitoring
+  metricsEnabled: config.metricsEnabled,
+  logLevel: config.logLevel
 });
 
 export function validateConfig(): void {

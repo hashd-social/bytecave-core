@@ -9,6 +9,7 @@ export interface BlobMetadata {
   createdAt: number;
   version: number; // Schema version, starting at 2
   pinned?: boolean; // Never delete if true (Requirement 9)
+  compressed?: boolean; // Whether blob is compressed with gzip
   integrityHash?: string; // HMAC of critical fields to detect tampering
   // Application metadata (v2)
   appId?: string;        // keccak256(appName) - which app stored this
@@ -159,8 +160,7 @@ export interface Config {
   p2pEnableRelay: boolean;
   shardCount: number;
   nodeShards: number[] | ShardRange[];
-  // Content type filtering
-  contentFilter: ContentFilterConfig;
+  // Content filtering removed - nodes accept all content in shard range
   gcEnabled: boolean;
   gcRetentionMode: RetentionMode;
   gcMaxStorageMB: number;
@@ -182,6 +182,9 @@ export interface Config {
   metricsEnabled: boolean;
   logLevel: string;
   corsOrigin: string[];
+  // App filtering - nodes can choose which apps to store data for
+  allowedApps: string[]; // Array of app names (e.g., ['hashd', 'myapp']). Empty array = accept all apps
+  requireAppRegistry: boolean; // If true, reject storage requests if AppRegistry is not initialized
 }
 
 export interface Metrics {
@@ -466,10 +469,7 @@ export interface NodeMetadata {
   versionCompliant: boolean; // True if version >= minVersion
   versionBehind: boolean; // True if version < minVersion
   features: string[];
-  // Content type filtering
-  contentTypes: 'all' | ContentType[]; // What content types this node accepts
-  allowedGuilds: 'all' | string[]; // 'all' or specific guild IDs
-  blockedGuilds: string[]; // Guild IDs that are blocked
+  // Content filtering removed - nodes accept all content in shard range
   storageCapacity: number;
   storageUsed: number;
   loadFactor: number; // 0-1

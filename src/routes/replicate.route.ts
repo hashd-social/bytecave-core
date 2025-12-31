@@ -18,7 +18,7 @@ export async function replicateHandler(req: Request, res: Response): Promise<voi
     // Validate request
     validateReplicateRequest(req.body);
 
-    const { cid, ciphertext, mimeType, fromPeer, contentType, guildId } = req.body as ReplicateRequest;
+    const { cid, ciphertext, mimeType, fromPeer, appId, contentType, sender, timestamp, metadata } = req.body as ReplicateRequest;
 
     logger.debug('Replication request received', { cid, fromPeer, contentType });
 
@@ -38,8 +38,11 @@ export async function replicateHandler(req: Request, res: Response): Promise<voi
       // Store blob with replication and content metadata
       await storageService.storeBlob(cid, ciphertextBuffer, mimeType, { 
         fromPeer,
+        appId,
         contentType,
-        guildId
+        sender,
+        timestamp,
+        metadata
       });
       logger.info('Replicated blob stored', { cid, fromPeer, size: ciphertextBuffer.length, contentType });
     } else {

@@ -48,92 +48,11 @@ export class GarbageCollectionService {
   }
 
   /**
-   * Enforce content policy on startup
-   * Removes any stored content that doesn't match the current content type or guild policy
+   * Content policy enforcement removed - nodes now accept all content in shard range
+   * Content filtering is done at application level using metadata queries
    */
   async enforceContentPolicy(): Promise<void> {
-    const { contentFilter } = config;
-    
-    // If accepting all types and all guilds, nothing to enforce
-    if (contentFilter.types === 'all' && 
-        contentFilter.allowedGuilds === 'all' && 
-        contentFilter.blockedGuilds.length === 0) {
-      logger.info('Content policy: accepting all content, no enforcement needed');
-      return;
-    }
-
-    logger.info('Enforcing content policy on startup', {
-      types: contentFilter.types,
-      allowedGuilds: contentFilter.allowedGuilds === 'all' ? 'all' : contentFilter.allowedGuilds.length,
-      blockedGuilds: contentFilter.blockedGuilds.length
-    });
-
-    const allBlobs = await storageService.listBlobs();
-    let removed = 0;
-    let kept = 0;
-    let unknown = 0;
-
-    for (const blob of allBlobs) {
-      const metadata = await storageService.getMetadata(blob.cid);
-      if (!metadata) continue;
-
-      // Skip pinned content
-      if (metadata.pinned) {
-        kept++;
-        continue;
-      }
-
-      // Check if content type matches policy
-      let shouldRemove = false;
-      let reason = '';
-
-      // Check content type filter
-      if (contentFilter.types !== 'all' && metadata.contentType) {
-        if (!contentFilter.types.includes(metadata.contentType as any)) {
-          shouldRemove = true;
-          reason = `content type "${metadata.contentType}" not in allowed types`;
-        }
-      }
-
-      // Check blocked guilds
-      if (!shouldRemove && metadata.guildId && contentFilter.blockedGuilds.length > 0) {
-        if (contentFilter.blockedGuilds.includes(metadata.guildId)) {
-          shouldRemove = true;
-          reason = `guild "${metadata.guildId}" is blocked`;
-        }
-      }
-
-      // Check allowed guilds (if not 'all')
-      if (!shouldRemove && contentFilter.allowedGuilds !== 'all' && metadata.guildId) {
-        if (!contentFilter.allowedGuilds.includes(metadata.guildId)) {
-          shouldRemove = true;
-          reason = `guild "${metadata.guildId}" not in allowed guilds`;
-        }
-      }
-
-      // Handle content without metadata (legacy data)
-      if (!metadata.contentType && !metadata.guildId) {
-        // Can't determine policy compliance for legacy data without content type
-        // Keep it for now but log as unknown
-        unknown++;
-        continue;
-      }
-
-      if (shouldRemove) {
-        await storageService.deleteBlob(blob.cid);
-        removed++;
-        logger.info('Removed content outside policy', { cid: blob.cid, reason });
-      } else {
-        kept++;
-      }
-    }
-
-    logger.info('Content policy enforcement complete', {
-      total: allBlobs.length,
-      removed,
-      kept,
-      unknown
-    });
+    logger.info('Content policy enforcement disabled - nodes accept all content in shard range');
   }
 
   /**
@@ -305,13 +224,50 @@ export class GarbageCollectionService {
     }
 
     if (config.gcRetentionMode === 'size' || config.gcRetentionMode === 'hybrid') {
-      // Check if we're over storage limit
+      // Check if we're over storage limit OR if free disk space is low
       const stats = await storageService.getStats();
       const usedMB = stats.totalSize / (1024 * 1024);
+      const pinnedMB = (stats.pinnedSize || 0) / (1024 * 1024);
+      
+      // Check free disk space
+      const freeDiskBytes = await storageService.getFreeDiskSpace();
+      const freeDiskMB = freeDiskBytes / (1024 * 1024);
+      const needsCleanup = usedMB > config.gcMaxStorageMB || freeDiskMB < config.gcMinFreeDiskMB;
 
-      if (usedMB > config.gcMaxStorageMB) {
-        const excessMB = usedMB - config.gcMaxStorageMB;
-        const excessBytes = excessMB * 1024 * 1024;
+      if (needsCleanup) {
+        let excessBytes = 0;
+        
+        // Calculate how much we need to free
+        if (usedMB > config.gcMaxStorageMB) {
+          const storageExcessMB = usedMB - config.gcMaxStorageMB;
+          excessBytes = Math.max(excessBytes, storageExcessMB * 1024 * 1024);
+        }
+        
+        if (freeDiskMB < config.gcMinFreeDiskMB) {
+          const diskExcessMB = config.gcMinFreeDiskMB - freeDiskMB;
+          excessBytes = Math.max(excessBytes, diskExcessMB * 1024 * 1024);
+        }
+        
+        // Reserve space for pinned content
+        const availableForDeletion = usedMB - pinnedMB - config.gcReservedForPinnedMB;
+        if (availableForDeletion <= 0) {
+          logger.warn('Cannot free space - all content is pinned or reserved', {
+            usedMB,
+            pinnedMB,
+            reservedMB: config.gcReservedForPinnedMB
+          });
+          return []; // Cannot delete anything
+        }
+
+        logger.info('GC cleanup needed', {
+          usedMB,
+          maxStorageMB: config.gcMaxStorageMB,
+          freeDiskMB,
+          minFreeDiskMB: config.gcMinFreeDiskMB,
+          excessMB: excessBytes / (1024 * 1024),
+          pinnedMB,
+          reservedMB: config.gcReservedForPinnedMB
+        });
 
         // Sort by priority and take enough to free up space
         // Pinned blobs have priority -1000 so they'll be at the end

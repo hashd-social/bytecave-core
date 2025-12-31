@@ -43,7 +43,6 @@ import {
 } from './routes/replication-status.route.js';
 import { shardsHandler } from './routes/shards.route.js';
 import { validateShardAssignment, validateShardForProof } from './middleware/shard-validation.middleware.js';
-import { validateContentFilter } from './middleware/content-filter.middleware.js';
 import { gcStatusHandler, triggerGCHandler, forcePurgeHandler, deleteBlobHandler } from './routes/gc.route.js';
 import { 
   pinBlobHandler, 
@@ -139,9 +138,9 @@ app.disable('x-powered-by');
  * Routes with Rate Limiting
  */
 
-// Storage endpoints with shard validation (R7.5) and content type filtering
-// Only /store is allowed - requires on-chain authorization
-app.post('/store', storageLimiter, validateContentFilter, validateShardAssignment, storeHandler);
+// Storage endpoints with shard validation (R7.5)
+// Only /store is allowed - requires on-chain authorization with appId validation
+app.post('/store', storageLimiter, validateShardAssignment, storeHandler);
 // REMOVED: /replicate endpoint - was insecure, allowed bypassing authorization
 // Replication now only via P2P protocols (/bytecave/replicate/1.0.0) with peer verification
 
