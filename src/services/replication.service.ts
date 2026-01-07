@@ -7,6 +7,7 @@
  */
 
 import { config } from '../config/index.js';
+import { REPLICATION_FACTOR } from '../constants/replication.js';
 import { logger } from '../utils/logger.js';
 import { Peer, ReplicateRequest } from '../types/index.js';
 import { contractIntegrationService } from './contract-integration.service.js';
@@ -57,7 +58,7 @@ export class ReplicationService {
     const enabledPeers = this.peers
       .filter(p => p.enabled)
       .sort((a, b) => a.priority - b.priority)
-      .slice(0, config.replicationFactor);
+      .slice(0, REPLICATION_FACTOR);
 
     if (enabledPeers.length === 0) {
       logger.warn('No enabled peers for replication');

@@ -8,6 +8,7 @@ import { config } from '../config/index.js';
 import { storageService } from '../services/storage.service.js';
 import { metricsService } from '../services/metrics.service.js';
 import { logger } from '../utils/logger.js';
+import { REPLICATION_FACTOR } from '../constants/replication.js';
 
 const VERSION = '1.0.0';
 
@@ -27,7 +28,7 @@ export async function statusHandler(_req: Request, res: Response): Promise<void>
       lastProof: 0, // TODO: Implement storage proofs (Requirement 2.6)
       uptime,
       endpoint: config.nodeUrl,
-      replicationFactor: config.replicationFactor,
+      replicationFactor: REPLICATION_FACTOR,
       isAcceptingBlobs: stats.totalSize < maxCapacityBytes
     };
 

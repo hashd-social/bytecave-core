@@ -120,7 +120,6 @@ export const config: Config = {
   // Replication - config.json takes precedence
   replicationEnabled: getConfigValue(persistedConfig.replicationEnabled, getEnvBoolean('REPLICATION_ENABLED', true)),
   replicationTimeoutMs: getConfigValue(persistedConfig.replicationTimeoutMs, getEnvNumber('REPLICATION_TIMEOUT_MS', 5000)),
-  replicationFactor: getConfigValue(persistedConfig.replicationFactor, getEnvNumber('REPLICATION_FACTOR', 3)),
   
   // Security - config.json takes precedence
   enableBlockedContent: getConfigValue(persistedConfig.enableBlockedContent, getEnvBoolean('ENABLE_BLOCKED_CONTENT', true)),
@@ -180,7 +179,6 @@ configManager.updateNodeConfig({
   // Replication Configuration
   replicationEnabled: config.replicationEnabled,
   replicationTimeoutMs: config.replicationTimeoutMs,
-  replicationFactor: config.replicationFactor,
   
   // Security
   enableBlockedContent: config.enableBlockedContent,
@@ -207,10 +205,6 @@ export function validateConfig(): void {
 
   if (config.maxStorageGB < 1) {
     throw new Error('MAX_STORAGE_GB must be at least 1');
-  }
-
-  if (config.replicationFactor < 1) {
-    throw new Error('REPLICATION_FACTOR must be at least 1');
   }
 
   if (config.replicationTimeoutMs < 100) {

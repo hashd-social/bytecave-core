@@ -17,6 +17,7 @@ import { logger } from '../utils/logger.js';
 import { generateReplicationStateHash, verifyReplicationStateIntegrity } from '../utils/cid.js';
 import { reputationService } from './reputation.service.js';
 import { selectNodesForReplication, isReplicationComplete } from '../utils/node-selection.js';
+import { REPLICATION_FACTOR } from '../constants/replication.js';
 import { 
   ReplicationTarget, 
   ReplicationState, 
@@ -77,7 +78,7 @@ export class ReplicationManagerService {
     const selection = selectNodesForReplication(
       cid,
       availableNodes,
-      config.replicationFactor,
+      REPLICATION_FACTOR,
       existing?.failedNodes || []
     );
 
@@ -90,7 +91,7 @@ export class ReplicationManagerService {
     // Initialize replication state
     const state: ReplicationState = {
       cid,
-      replicationFactor: config.replicationFactor,
+      replicationFactor: REPLICATION_FACTOR,
       targetNodes: selection.selected.map(n => n.nodeId),
       confirmedNodes: [],
       failedNodes: existing?.failedNodes || [],
@@ -241,7 +242,7 @@ export class ReplicationManagerService {
     if (!state) {
       return {
         cid,
-        expectedReplicas: config.replicationFactor,
+        expectedReplicas: REPLICATION_FACTOR,
         actualReplicas: 0,
         nodes: [],
         complete: false
@@ -368,13 +369,13 @@ export class ReplicationManagerService {
     const actualReplicas = await this.verifyReplicationWithPeers(cid, peerUrls);
     
     // Safe to delete only if we have at least replicationFactor copies elsewhere
-    const isSafe = actualReplicas >= config.replicationFactor;
+    const isSafe = actualReplicas >= REPLICATION_FACTOR;
     
     if (!isSafe) {
       logger.warn('Blob not safe to delete - insufficient replicas', {
         cid,
         actualReplicas,
-        required: config.replicationFactor
+        required: REPLICATION_FACTOR
       });
     }
     
@@ -385,11 +386,11 @@ export class ReplicationManagerService {
    * Track a successful replication (called by replication service)
    */
   trackReplication(cid: string, successfulPeers: string[]): void {
-    const complete = successfulPeers.length >= config.replicationFactor;
+    const complete = successfulPeers.length >= REPLICATION_FACTOR;
     
     const state: ReplicationState = {
       cid,
-      replicationFactor: config.replicationFactor,
+      replicationFactor: REPLICATION_FACTOR,
       targetNodes: successfulPeers,
       confirmedNodes: successfulPeers,
       failedNodes: [],
@@ -398,7 +399,7 @@ export class ReplicationManagerService {
       // SECURITY: Add integrity hash to prevent tampering
       integrityHash: generateReplicationStateHash(
         cid,
-        config.replicationFactor,
+        REPLICATION_FACTOR,
         successfulPeers,
         complete
       ),

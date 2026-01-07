@@ -175,7 +175,6 @@ export interface Config {
   maxStorageGB: number;
   replicationEnabled: boolean;
   replicationTimeoutMs: number;
-  replicationFactor: number;
   enableBlockedContent: boolean;
   cacheSizeMB: number;
   compressionEnabled: boolean;
