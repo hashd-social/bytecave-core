@@ -28,6 +28,8 @@ import { logger } from '../utils/logger.js';
 import { config, getConfigManager } from '../config/index.js';
 import { p2pProtocolsService } from './p2p-protocols.service.js';
 import { peerCacheService } from './peer-cache.service.js';
+import fs from 'fs/promises';
+import path from 'path';
 
 const ANNOUNCE_TOPIC = 'bytecave-announce';
 const BROADCAST_TOPIC = 'bytecave-broadcast';
@@ -58,6 +60,37 @@ class P2PService extends EventEmitter {
   private announceTimer: NodeJS.Timeout | null = null;
   private started = false;
 
+  /**
+   * Load or generate persistent libp2p private key
+   * This ensures the peerId stays the same across restarts
+   */
+  private async loadOrGeneratePrivateKey(): Promise<any> {
+    const { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } = await import('@libp2p/crypto/keys');
+    
+    const keyPath = path.join(config.dataDir, 'p2p-identity.json');
+    
+    try {
+      // Try to load existing identity
+      const keyData = JSON.parse(await fs.readFile(keyPath, 'utf8'));
+      const privateKey = privateKeyFromProtobuf(Buffer.from(keyData.privateKey, 'base64'));
+      logger.info('Loaded existing P2P identity');
+      return privateKey;
+    } catch (error) {
+      // Generate new identity
+      logger.info('Generating new P2P identity...');
+      const privateKey = await generateKeyPair('Ed25519');
+      
+      // Save for future use
+      const keyData = {
+        privateKey: Buffer.from(privateKeyToProtobuf(privateKey)).toString('base64')
+      };
+      await fs.writeFile(keyPath, JSON.stringify(keyData, null, 2), { mode: 0o600 });
+      logger.info('P2P identity saved');
+      
+      return privateKey;
+    }
+  }
+
 async start(): Promise<void> {
     if (this.started) {
       logger.warn('P2P service already started');
@@ -73,6 +106,9 @@ async start(): Promise<void> {
     }
 
     try {
+      // Load or generate persistent libp2p private key
+      const privateKey = await this.loadOrGeneratePrivateKey();
+      
       const peerDiscovery: any[] = [];
 
       // --- FIX 1: Aggressive Identify Service ---
@@ -122,6 +158,7 @@ async start(): Promise<void> {
       }
 
       this.node = await createLibp2p({
+        privateKey,
         addresses: { listen: listenAddresses },
         transports,
         connectionEncrypters: [noise()],
