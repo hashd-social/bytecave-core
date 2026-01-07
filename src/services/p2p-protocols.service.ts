@@ -8,13 +8,13 @@
  * - /bytecave/info/1.0.0 - Node info (for registration)
  */
 
-import { pipe } from 'it-pipe';
 import { Libp2p } from 'libp2p';
 import type { Stream, Connection } from '@libp2p/interface';
 import { logger } from '../utils/logger.js';
 import { storageService } from './storage.service.js';
+import { metricsService } from './metrics.service.js';
+import { proofService } from './proof.service.js';
 import { config } from '../config/index.js';
-import * as lp from 'it-length-prefixed';
 
 // Protocol identifiers
 export const PROTOCOL_REPLICATE = '/bytecave/replicate/1.0.0';
@@ -61,6 +61,22 @@ export interface P2PHealthResponse {
   uptime: number;
   version: string;
   multiaddrs: string[];
+  nodeId?: string;
+  publicKey?: string;
+  ownerAddress?: string;
+  metrics?: {
+    requestsLastHour: number;
+    avgResponseTime: number;
+    successRate: number;
+  };
+  integrity?: {
+    checked: number;
+    passed: number;
+    failed: number;
+    orphaned: number;
+    metadataTampered: number;
+    failedCids: string[];
+  };
 }
 
 export interface P2PInfoResponse {
@@ -209,22 +225,44 @@ class P2PProtocolsService {
         return;
       }
 
-      // SECURITY CHECK 5: Verify CID exists on-chain in authorized contracts
-      // This prevents malicious nodes from injecting unauthorized blobs
-      const { storageAuthorizationService } = await import('./storage-authorization.service.js');
-      const onChainVerification = await storageAuthorizationService.verifyCIDOnChain(request.cid);
+      // SECURITY CHECK 5: Verify CID exists on-chain in authorized contracts (for messages only)
+      // Media content is verified by signature alone - no on-chain CID storage
+      const isMediaContent = request.contentType === 'media';
       
-      if (!onChainVerification.authorized) {
-        logger.warn('Replication rejected: CID not found on-chain', { 
+      if (!isMediaContent) {
+        // For messages/posts: require on-chain CID verification
+        const { storageAuthorizationService } = await import('./storage-authorization.service.js');
+        const onChainVerification = await storageAuthorizationService.verifyCIDOnChain(request.cid);
+        
+        if (!onChainVerification.authorized) {
+          logger.warn('Replication rejected: CID not found on-chain', { 
+            cid: request.cid, 
+            from: remotePeer,
+            error: onChainVerification.error
+          });
+          await this.writeMessage(stream, { 
+            success: false, 
+            error: 'CID not authorized on-chain' 
+          });
+          return;
+        }
+      } else {
+        // For media: verify sender signature was provided
+        if (!request.sender) {
+          logger.warn('Replication rejected: Media content missing sender', { 
+            cid: request.cid, 
+            from: remotePeer
+          });
+          await this.writeMessage(stream, { 
+            success: false, 
+            error: 'Media content requires sender metadata' 
+          });
+          return;
+        }
+        logger.debug('Media content accepted - signature-based authorization', { 
           cid: request.cid, 
-          from: remotePeer,
-          error: onChainVerification.error
+          sender: request.sender 
         });
-        await this.writeMessage(stream, { 
-          success: false, 
-          error: 'CID not authorized on-chain' 
-        });
-        return;
       }
 
       // Check if we already have this blob
@@ -248,7 +286,8 @@ class P2PProtocolsService {
       logger.info('Blob replicated via P2P - all security checks passed', { 
         cid: request.cid, 
         from: remotePeer,
-        onChainSource: onChainVerification.source
+        contentType: request.contentType,
+        sender: request.sender
       });
       await this.writeMessage(stream, { success: true });
 
@@ -307,14 +346,24 @@ class P2PProtocolsService {
    */
   private async handleHealth(stream: Stream, connection: Connection): Promise<void> {
     const remotePeer = connection.remotePeer.toString();
-    logger.debug('Handling health request', { from: remotePeer });
+    logger.debug('Health handler called', { from: remotePeer });
 
     try {
       // Read empty request (just a ping)
       await this.readMessage(stream);
 
       const stats = await storageService.getStats();
+      const metrics = metricsService.getMetrics();
+      const successRate = metricsService.getSuccessRate();
       const multiaddrs = this.node?.getMultiaddrs().map(ma => ma.toString()) || [];
+
+      // Get public key if available
+      let publicKey: string | undefined;
+      try {
+        publicKey = proofService.getPublicKey();
+      } catch {
+        // Keys not initialized yet
+      }
 
       const response: P2PHealthResponse = {
         peerId: this.node?.peerId.toString() || '',
@@ -324,13 +373,24 @@ class P2PProtocolsService {
         storageMax: config.gcMaxStorageMB * 1024 * 1024,
         uptime: Date.now() - this.startTime,
         version: '1.0.0',
-        multiaddrs
+        multiaddrs,
+        nodeId: config.nodeId,
+        publicKey,
+        ownerAddress: config.ownerAddress,
+        metrics: {
+          requestsLastHour: metrics.requestsLastHour,
+          avgResponseTime: metrics.avgLatency,
+          successRate
+        }
       };
 
       await this.writeMessage(stream, response);
+      
+      // Close the stream to signal we're done
+      await stream.close();
 
     } catch (error: any) {
-      logger.error('Health handler error', { error: error.message });
+      logger.error('Health handler error', { error: error.message, stack: error.stack });
     }
   }
 
@@ -552,24 +612,54 @@ class P2PProtocolsService {
   // ============================================
 
   /**
-   * Read a JSON message from a stream using length-prefixed framing
+   * Read a JSON message from a stream using custom length-prefixed framing
    */
   private async readMessage<T>(stream: Stream): Promise<T | null> {
     try {
-      const chunks: Uint8Array[] = [];
+      // Read length prefix (4 bytes, big-endian)
+      const lengthBytes = new Uint8Array(4);
+      let bytesRead = 0;
       
-      // Use any to bypass strict typing on stream.source
-      const source = (stream as any).source;
-      for await (const chunk of pipe(source, lp.decode)) {
-        chunks.push(chunk.subarray());
-        break; // Only read first message
+      // Stream is AsyncIterable itself, not stream.source
+      for await (const chunk of stream) {
+        const chunkArray = chunk instanceof Uint8Array ? chunk : chunk.subarray();
+        const bytesToCopy = Math.min(4 - bytesRead, chunkArray.length);
+        lengthBytes.set(chunkArray.subarray(0, bytesToCopy), bytesRead);
+        bytesRead += bytesToCopy;
+        
+        if (bytesRead >= 4) {
+          // Read message length
+          const length = new DataView(lengthBytes.buffer).getUint32(0, false);
+          
+          // Read message data
+          const messageBytes = new Uint8Array(length);
+          let messageBytesRead = 0;
+          
+          // Copy remaining bytes from first chunk
+          if (chunkArray.length > bytesToCopy) {
+            const remainingBytes = chunkArray.subarray(bytesToCopy);
+            const copyLength = Math.min(remainingBytes.length, length);
+            messageBytes.set(remainingBytes.subarray(0, copyLength), 0);
+            messageBytesRead = copyLength;
+          }
+          
+          // Read more chunks if needed
+          if (messageBytesRead < length) {
+            for await (const nextChunk of stream) {
+              const nextArray = nextChunk instanceof Uint8Array ? nextChunk : nextChunk.subarray();
+              const copyLength = Math.min(nextArray.length, length - messageBytesRead);
+              messageBytes.set(nextArray.subarray(0, copyLength), messageBytesRead);
+              messageBytesRead += copyLength;
+              if (messageBytesRead >= length) break;
+            }
+          }
+          
+          const data = new TextDecoder().decode(messageBytes);
+          return JSON.parse(data) as T;
+        }
       }
 
-      if (chunks.length === 0) return null;
-
-      const data = new TextDecoder().decode(chunks[0]);
-      return JSON.parse(data) as T;
-
+      return null;
     } catch (error: any) {
       logger.debug('Failed to read message', { error: error.message });
       return null;
@@ -577,18 +667,22 @@ class P2PProtocolsService {
   }
 
   /**
-   * Write a JSON message to a stream using length-prefixed framing
+   * Write a JSON message to a stream using custom length-prefixed framing
    */
   private async writeMessage(stream: Stream, message: any): Promise<void> {
     const data = new TextEncoder().encode(JSON.stringify(message));
     
-    // Use any to bypass strict typing on stream.sink
-    const sink = (stream as any).sink;
-    await pipe(
-      [data],
-      lp.encode,
-      sink
-    );
+    // Create length prefix (4 bytes, big-endian)
+    const lengthPrefix = new Uint8Array(4);
+    new DataView(lengthPrefix.buffer).setUint32(0, data.length, false);
+    
+    // Combine length prefix and data
+    const combined = new Uint8Array(lengthPrefix.length + data.length);
+    combined.set(lengthPrefix, 0);
+    combined.set(data, lengthPrefix.length);
+    
+    // Write to stream using send() method
+    stream.send(combined);
   }
 }
 

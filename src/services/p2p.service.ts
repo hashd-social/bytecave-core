@@ -17,7 +17,7 @@ import { floodsub } from '@libp2p/floodsub';
 import { identify } from '@libp2p/identify';
 import { bootstrap } from '@libp2p/bootstrap';
 import { mdns } from '@libp2p/mdns';
-import { circuitRelayTransport, circuitRelayServer } from '@libp2p/circuit-relay-v2';
+import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { dcutr } from '@libp2p/dcutr';
 // pipe imported for future protocol handlers
 // import { pipe } from 'it-pipe';
@@ -37,7 +37,6 @@ const ANNOUNCE_INTERVAL = 60000; // 1 minute
 export interface P2PPeerInfo {
   peerId: string;
   multiaddrs: string[];
-  httpEndpoint?: string;
   latency?: number;
   lastSeen: number;
   reputation: number;
@@ -107,13 +106,23 @@ async start(): Promise<void> {
       // ... (Transports setup - same as before) ...
       const transports: any[] = [tcp(), webSockets()];
       if (config.p2pEnableRelay) {
-        transports.push(circuitRelayTransport());
-        services.relay = circuitRelayServer();
+        // Add circuit relay transport for being reachable through relay
+        transports.push(circuitRelayTransport({
+          reservationCompletionTimeout: 10000
+        }));
         services.dcutr = dcutr();
       }
 
+      // Add circuit relay listen address if relay is enabled
+      const listenAddresses = [...config.p2pListenAddresses];
+      if (config.p2pEnableRelay && config.p2pRelayPeers.length > 0) {
+        // Add circuit relay listen address to trigger automatic reservations
+        listenAddresses.push('/p2p-circuit');
+        logger.info('Circuit relay enabled - will listen on /p2p-circuit');
+      }
+
       this.node = await createLibp2p({
-        addresses: { listen: config.p2pListenAddresses },
+        addresses: { listen: listenAddresses },
         transports,
         connectionEncrypters: [noise()],
         streamMuxers: [yamux()],
@@ -125,21 +134,111 @@ async start(): Promise<void> {
         }
       });
 
-      // Log identify completion for debugging
-      this.node.addEventListener('peer:identify', (evt) => {
-        const peerId = evt.detail.peerId;
-        const protocols = evt.detail.protocols;
-        const hasFloodsub = protocols.includes('/floodsub/1.0.0');
-        
+      // Log identify completion and manually request circuit relay reservation
+      this.node.addEventListener('peer:identify', async (evt) => {
+        const { peerId, protocols } = evt.detail;
+        const hasFloodsub = protocols.some(p => p === '/floodsub/1.0.0');
+        const hasCircuitRelay = protocols.some(p => p.includes('/libp2p/circuit/relay/0.2.0/hop'));
         logger.info('✅ Identify complete for peer', { 
           peerId: peerId.toString().slice(0, 16) + '...', 
-          hasFloodsub
+          hasFloodsub,
+          hasCircuitRelay,
+          protocols: protocols.slice(0, 10) // Log first 10 protocols
         });
+
+        // Circuit relay detected - automatic reservation should happen via transport
+        if (hasCircuitRelay && config.p2pEnableRelay) {
+          logger.info('Circuit relay server detected - automatic reservation should be triggered', { 
+            peerId: peerId.toString().slice(0, 16) + '...' 
+          });
+        }
       });
 
       this.setupEventListeners();
       await this.node.start();
       logger.info('Node started');
+      
+      // Log available transports and manually trigger circuit relay reservation
+      const components = (this.node as any).components;
+      if (components?.transportManager) {
+        const transports = components.transportManager.getTransports();
+        logger.info('Available transports', { transports: transports.map((t: any) => t.constructor.name) });
+        
+        // Find circuit relay transport and access its reservation store
+        const circuitTransport = transports.find((t: any) => t.constructor.name === 'CircuitRelayTransport');
+        if (circuitTransport && config.p2pRelayPeers.length > 0) {
+          logger.info('Circuit relay transport found - manually triggering reservations');
+          
+          // Access the reservation store and manually add relay peers
+          setTimeout(async () => {
+            try {
+              for (const relayAddr of config.p2pRelayPeers) {
+                const ma = multiaddr(relayAddr);
+                // Extract peer ID from multiaddr
+                const parts = ma.toString().split('/p2p/');
+                const relayPeerIdStr = parts.length > 1 ? parts[1] : null;
+                
+                if (relayPeerIdStr) {
+                  logger.info('Manually adding relay to reservation store', { relayPeerId: relayPeerIdStr.slice(0, 16) + '...' });
+                  
+                  // Access the reservation store from the transport
+                  const reservationStore = (circuitTransport as any).reservationStore;
+                  if (reservationStore && reservationStore.addRelay) {
+                    // Convert string to PeerId object
+                    const { peerIdFromString } = await import('@libp2p/peer-id');
+                    const relayPeerId = peerIdFromString(relayPeerIdStr);
+                    
+                    // Add event listeners to track reservation lifecycle
+                    reservationStore.addEventListener('relay:created-reservation', (evt: any) => {
+                      logger.info('🎉 Circuit relay reservation created!', { 
+                        relay: evt.detail.relay?.toString().slice(0, 16) + '...',
+                        expire: evt.detail.reservation?.expire
+                      });
+                    });
+                    
+                    reservationStore.addEventListener('relay:removed', (evt: any) => {
+                      logger.warn('Circuit relay reservation removed', { 
+                        relay: evt.detail.relay?.toString().slice(0, 16) + '...'
+                      });
+                    });
+                    
+                    await reservationStore.addRelay(relayPeerId, 'configured');
+                    logger.info('✅ Relay added to reservation store - waiting for reservation to be established', { 
+                      relayPeerId: relayPeerIdStr.slice(0, 16) + '...' 
+                    });
+                    
+                    // Check reservation status and multiaddrs after a delay
+                    setTimeout(() => {
+                      const hasReservation = reservationStore.hasReservation(relayPeerId);
+                      const nodeAddrs = this.node?.getMultiaddrs().map(ma => ma.toString()) || [];
+                      const circuitAddrs = nodeAddrs.filter(addr => addr.includes('p2p-circuit'));
+                      const hasCircuitAddr = circuitAddrs.length > 0;
+                      
+                      logger.info('Reservation status check', { 
+                        relayPeerId: relayPeerIdStr.slice(0, 16) + '...',
+                        hasReservation,
+                        hasCircuitAddr,
+                        totalAddrs: nodeAddrs.length,
+                        circuitAddrs: circuitAddrs.slice(0, 3) // Show first 3 circuit addresses
+                      });
+                      
+                      if (hasReservation && !hasCircuitAddr) {
+                        logger.warn('Reservation exists but no circuit relay addresses in multiaddrs - reservation may not be active on relay server');
+                      } else if (hasCircuitAddr) {
+                        logger.info('✅ Circuit relay is working! Node is reachable through relay', {
+                          circuitAddrCount: circuitAddrs.length
+                        });
+                      }
+                    }, 5000);
+                  }
+                }
+              }
+            } catch (error: any) {
+              logger.error('Failed to manually add relay reservations', { error: error.message });
+            }
+          }, 3000); // Wait for node to be fully started
+        }
+      }
 
       // Setup pubsub immediately
       await this.setupPubsub();
@@ -438,7 +537,6 @@ async start(): Promise<void> {
 
   private handleAnnouncement(announcement: {
     peerId: string;
-    httpEndpoint?: string;
     availableStorage: number;
     blobCount: number;
   }): void {
@@ -447,7 +545,6 @@ async start(): Promise<void> {
     const peerInfo: P2PPeerInfo = {
       peerId: announcement.peerId,
       multiaddrs: existing?.multiaddrs || [],
-      httpEndpoint: announcement.httpEndpoint,
       lastSeen: Date.now(),
       reputation: existing?.reputation || 100
     };
@@ -456,8 +553,7 @@ async start(): Promise<void> {
     this.emit('peer:announce', peerInfo);
 
     logger.debug('Received peer announcement', {
-      peerId: announcement.peerId,
-      httpEndpoint: announcement.httpEndpoint
+      peerId: announcement.peerId
     });
   }
 
@@ -478,13 +574,28 @@ async start(): Promise<void> {
     if (!pubsub) return;
 
     try {
+      // Construct relay circuit addresses for browser connectivity
+      const relayAddrs: string[] = [];
+      
+      // Get relay peer addresses from config
+      const relayPeers = config.p2pRelayPeers || [];
+      for (const relayAddr of relayPeers) {
+        // Convert TCP relay address to WebSocket for browser compatibility
+        // Browser connects via WebSocket, so use ws address for circuit
+        const wsRelayAddr = relayAddr.replace('/tcp/4001/', '/tcp/4002/ws/');
+        
+        // Construct circuit relay address: <ws-relay-addr>/p2p-circuit/p2p/<our-peer-id>
+        const circuitAddr = `${wsRelayAddr}/p2p-circuit/p2p/${this.node.peerId.toString()}`;
+        relayAddrs.push(circuitAddr);
+      }
+
       const announcement = {
         peerId: this.node.peerId.toString(),
-        nodeId: config.nodeId, // Add nodeId for identification
-        httpEndpoint: config.nodeUrl,
+        nodeId: config.nodeId,
         availableStorage: config.gcMaxStorageMB * 1024 * 1024,
-        blobCount: 0, // Will be updated by storage service
-        timestamp: Date.now()
+        blobCount: 0,
+        timestamp: Date.now(),
+        relayAddrs: relayAddrs // Circuit relay addresses for browser connectivity
       };
 
       await pubsub.publish(
@@ -495,7 +606,7 @@ async start(): Promise<void> {
       logger.info('Published P2P announcement', { 
         nodeId: announcement.nodeId,
         peerId: announcement.peerId.slice(0, 16) + '...',
-        httpEndpoint: announcement.httpEndpoint 
+        relayAddrs: relayAddrs.length
       });
     } catch (error) {
       logger.warn('Failed to publish announcement', { error });
@@ -533,12 +644,10 @@ async start(): Promise<void> {
   }
 
   /**
-   * Get HTTP endpoints of known peers (for fallback/hybrid mode)
+   * Get known peer IDs (P2P communication only)
    */
-  getHttpEndpoints(): string[] {
-    return Array.from(this.knownPeers.values())
-      .filter(p => p.httpEndpoint)
-      .map(p => p.httpEndpoint!);
+  getKnownPeerIds(): string[] {
+    return Array.from(this.knownPeers.keys());
   }
 
   /**

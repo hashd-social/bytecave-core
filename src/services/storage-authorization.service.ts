@@ -403,6 +403,8 @@ export class StorageAuthorizationService {
         return authorization.threadId || '';
       case 'token_distribution':
         return authorization.tokenAddress || '';
+      case 'media':
+        return authorization.metadata?.mediaId || '';
       default:
         return '';
     }
@@ -423,12 +425,31 @@ export class StorageAuthorizationService {
         return this.verifyMessageAuthorization(authorization);
       case 'token_distribution':
         return this.verifyTokenDistributionAuthorization(authorization);
+      case 'media':
+        return this.verifyMediaAuthorization(authorization);
       default:
         return {
           authorized: false,
           error: `Unknown authorization type: ${authorization.type}`
         };
     }
+  }
+
+  /**
+   * Verify media authorization (sender owns the content)
+   * Media uploads are authorized by signature alone - no on-chain verification needed
+   * The sender field in metadata tracks ownership for future roosting/payment
+   */
+  private async verifyMediaAuthorization(
+    authorization: StorageAuthorization
+  ): Promise<AuthorizationVerificationResult> {
+    // Media authorization is signature-based only
+    // The signature proves the sender owns the content
+    // No additional on-chain checks required
+    return {
+      authorized: true,
+      sender: authorization.sender
+    };
   }
 
   /**

@@ -29,7 +29,7 @@ import {
  */
 function validateAuthorization(auth: any): auth is StorageAuthorization {
   if (!auth || typeof auth !== 'object') return false;
-  if (!['group_post', 'group_comment', 'message', 'token_distribution'].includes(auth.type)) return false;
+  if (!['group_post', 'group_comment', 'message', 'token_distribution', 'media'].includes(auth.type)) return false;
   if (!auth.sender || !ethers.isAddress(auth.sender)) return false;
   if (!auth.signature || typeof auth.signature !== 'string') return false;
   if (!auth.timestamp || typeof auth.timestamp !== 'number') return false;

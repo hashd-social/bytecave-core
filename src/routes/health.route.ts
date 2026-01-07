@@ -225,7 +225,6 @@ export async function getPeers(_req: Request, res: Response): Promise<void> {
       .filter(peer => connectedPeerIds.includes(peer.peerId))
       .map(peer => ({
         peerId: peer.peerId,
-        httpEndpoint: peer.httpEndpoint,
         // contentTypes removed - nodes accept all content in shard range
         connected: true,
         lastSeen: peer.lastSeen,

@@ -844,7 +844,8 @@ export type AuthorizationType =
   | 'group_post' 
   | 'group_comment' 
   | 'message' 
-  | 'token_distribution';
+  | 'token_distribution'
+  | 'media';
 
 export interface StorageAuthorization {
   type: AuthorizationType;

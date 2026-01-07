@@ -34,8 +34,7 @@ export interface PersistedConfig {
   gcMinFreeDiskMB?: number;
   gcReservedForPinnedMB?: number;
   gcIntervalMinutes?: number;
-  gcVerifyReplicas?: boolean;
-  gcVerifyProofs?: boolean;
+  // gcVerifyReplicas and gcVerifyProofs removed - always true for security
   
   // Storage Configuration
   maxStorageMB?: number;

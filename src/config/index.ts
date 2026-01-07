@@ -109,8 +109,8 @@ export const config: Config = {
   gcMinFreeDiskMB: getConfigValue(persistedConfig.gcMinFreeDiskMB, getEnvNumber('GC_MIN_FREE_DISK_MB', 1000)),
   gcReservedForPinnedMB: getConfigValue(persistedConfig.gcReservedForPinnedMB, getEnvNumber('GC_RESERVED_FOR_PINNED_MB', 1000)),
   gcIntervalMinutes: getConfigValue(persistedConfig.gcIntervalMinutes, getEnvNumber('GC_INTERVAL_MINUTES', 10)),
-  gcVerifyReplicas: getConfigValue(persistedConfig.gcVerifyReplicas, getEnvBoolean('GC_VERIFY_REPLICAS', true)),
-  gcVerifyProofs: getConfigValue(persistedConfig.gcVerifyProofs, getEnvBoolean('GC_VERIFY_PROOFS', false)),
+  gcVerifyReplicas: true, // Always verify replicas before deletion (security requirement)
+  gcVerifyProofs: true, // Always verify storage proofs (security requirement)
 
   // Storage configuration - config.json takes precedence
   dataDir: dataDir,
@@ -168,8 +168,8 @@ configManager.updateNodeConfig({
   gcMinFreeDiskMB: config.gcMinFreeDiskMB,
   gcReservedForPinnedMB: config.gcReservedForPinnedMB,
   gcIntervalMinutes: config.gcIntervalMinutes,
-  gcVerifyReplicas: config.gcVerifyReplicas,
-  gcVerifyProofs: config.gcVerifyProofs,
+  // Verification is always enabled for security - not saved to config
+  // gcVerifyReplicas and gcVerifyProofs are hardcoded to true
   
   // Storage Configuration
   maxStorageMB: config.gcMaxStorageMB,

@@ -354,13 +354,14 @@ export class GarbageCollectionService {
     }
 
     // Enhanced verification: Check if replicas are actually online (R8.7)
-    if (config.gcVerifyReplicas && replicaNodes.length > 0) {
+    // Verification is ALWAYS enabled for security
+    if (replicaNodes.length > 0) {
       try {
         const verification = await verifyReplication(
           cid,
           replicaNodes,
           requiredOtherReplicas,
-          config.gcVerifyProofs
+          true // Always verify storage proofs
         );
 
         if (!verification.sufficient) {

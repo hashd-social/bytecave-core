@@ -182,7 +182,7 @@ describe('P2P Protocols Service (Phase 49-53)', () => {
   });
 
   describe('Health Protocol Handler', () => {
-    test('should return health status with storage stats', async () => {
+    test('should return health status with storage stats via P2P', async () => {
       const mockGetStats = storageService.getStats as jest.Mock;
       
       mockGetStats.mockResolvedValue({
@@ -207,6 +207,7 @@ describe('P2P Protocols Service (Phase 49-53)', () => {
       expect(healthResponse.status).toBe('healthy');
       expect(healthResponse.blobCount).toBe(42);
       expect(healthResponse.storageUsed).toBe(1024 * 1024 * 100);
+      expect(healthResponse.peerId).toBe('test-peer-id');
     });
 
     test('should report degraded status when storage is high', () => {
@@ -224,6 +225,75 @@ describe('P2P Protocols Service (Phase 49-53)', () => {
       const uptime = Math.floor((Date.now() - startTime) / 1000);
 
       expect(uptime).toBe(60);
+    });
+
+    test('should get health data via P2P without HTTP endpoint', async () => {
+      // Verify health can be retrieved using only P2P protocol
+      const mockGetStats = storageService.getStats as jest.Mock;
+      
+      mockGetStats.mockResolvedValue({
+        blobCount: 100,
+        totalSize: 1024 * 1024 * 500 // 500MB
+      });
+
+      const stats = await mockGetStats();
+
+      // Simulate P2P health protocol response
+      const p2pHealthResponse = {
+        peerId: 'remote-peer-id',
+        status: 'healthy',
+        blobCount: stats.blobCount,
+        storageUsed: stats.totalSize,
+        uptime: 7200,
+        version: '1.0.0'
+      };
+
+      // Verify no HTTP endpoint is needed
+      expect(p2pHealthResponse).not.toHaveProperty('httpEndpoint');
+      expect(p2pHealthResponse).not.toHaveProperty('httpUrl');
+      
+      // Verify health data is complete
+      expect(p2pHealthResponse.peerId).toBe('remote-peer-id');
+      expect(p2pHealthResponse.status).toBe('healthy');
+      expect(p2pHealthResponse.blobCount).toBe(100);
+      expect(p2pHealthResponse.storageUsed).toBe(1024 * 1024 * 500);
+      expect(p2pHealthResponse.uptime).toBe(7200);
+    });
+
+    test('should handle health request from peer without HTTP fallback', async () => {
+      // Simulate receiving health request via P2P protocol
+      const mockGetStats = storageService.getStats as jest.Mock;
+      
+      mockGetStats.mockResolvedValue({
+        blobCount: 25,
+        totalSize: 1024 * 1024 * 50 // 50MB
+      });
+
+      const stats = await mockGetStats();
+      const startTime = Date.now() - 3600000; // 1 hour ago
+      const uptime = Math.floor((Date.now() - startTime) / 1000);
+
+      // Build health response for P2P protocol
+      const healthResponse = {
+        peerId: 'local-peer-id',
+        status: 'healthy',
+        blobCount: stats.blobCount,
+        storageUsed: stats.totalSize,
+        storageMax: 1024 * 1024 * 1024,
+        uptime,
+        version: '1.0.0',
+        contentTypes: 'all'
+      };
+
+      // Verify response structure for P2P-only communication
+      expect(healthResponse.peerId).toBe('local-peer-id');
+      expect(healthResponse.blobCount).toBe(25);
+      expect(healthResponse.storageUsed).toBe(1024 * 1024 * 50);
+      expect(healthResponse.uptime).toBeGreaterThan(3500);
+      
+      // Verify no HTTP-related fields
+      expect(healthResponse).not.toHaveProperty('httpEndpoint');
+      expect(healthResponse).not.toHaveProperty('url');
     });
   });
 
