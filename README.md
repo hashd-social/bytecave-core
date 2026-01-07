@@ -160,7 +160,7 @@ GET /info
 
 ```
 Node → Connects to Relay
-     → Announces on Gossipsub
+     → Announces on FloodSub
      → Discovers peers via DHT
      → Establishes P2P connections
      → Replicates data
@@ -170,7 +170,7 @@ Node → Connects to Relay
 
 - **Circuit Relay v2** - NAT traversal
 - **Kad-DHT** - Peer discovery and routing
-- **Gossipsub** - Peer announcements and broadcast messages
+- **FloodSub** - Peer announcements and broadcast messages
 - **Custom Protocols**:
   - `/bytecave/store/1.0.0` - Store requests
   - `/bytecave/retrieve/1.0.0` - Retrieve requests
