@@ -298,10 +298,35 @@ grep "Peer connected" logs/bytecave.log
 ## Security
 
 - All data encrypted with AES-256-GCM
-- Private keys stored securely in data directory
+- Private keys stored securely in data directory with 0o600 permissions (owner read/write only)
 - P2P connections use Noise protocol encryption
 - Proof generation uses Ed25519 signatures
 - No data stored in plaintext
+
+### Key Management
+
+The node uses **two separate Ed25519 key pairs** for different purposes:
+
+1. **Node Signing Key** (`node-key.json`) - **CRITICAL**
+   - Used for storage proofs and on-chain registration
+   - Derives the on-chain `nodeId = keccak256(publicKey)`
+   - **Loss = loss of node identity and staked tokens**
+   - **Compromise = attacker can forge proofs and steal stake**
+   - ⚠️ **MUST be backed up securely**
+
+2. **P2P Identity Key** (`p2p-identity.json`) - **Important**
+   - Used only for libp2p peer authentication
+   - Determines the `peerId` for P2P network
+   - **Loss = new peerId on restart (peers need to rediscover)**
+   - **Compromise = attacker can impersonate node in P2P network**
+   - Should be backed up for consistency
+
+**Security Best Practices:**
+- Keep `data/` directory permissions restricted (700)
+- Backup both key files to secure offline storage
+- Never share private keys
+- Use encrypted backups for production deployments
+- Consider hardware security modules (HSM) for high-value nodes
 
 ## Data Directory Structure
 
@@ -315,7 +340,10 @@ data/
 │   └── <cid>.json      # Cryptographic proof of storage
 ├── feeds/              # Feed data (if enabled)
 ├── config/             # Node configuration
-└── node-key.json       # Persistent P2P peer identity
+│   ├── config.json     # Node settings (can be regenerated)
+│   └── blocked-content.json  # Content policy
+├── node-key.json       # ⚠️ CRITICAL: Node signing key (BACKUP!)
+└── p2p-identity.json   # P2P peer identity (backup recommended)
 ```
 
 ## Development
