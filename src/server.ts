@@ -271,6 +271,9 @@ async function initialize(): Promise<void> {
     // Initialize P2P service
     await initializeP2P();
 
+    // Note: Nodes do not auto-register. Registration is done manually via dashboard.
+    // Contract integration is initialized in read-only mode for verification only.
+
     logger.info('Services initialized');
   } catch (error) {
     logger.error('Initialization failed', error);
@@ -295,6 +298,16 @@ async function initializeP2P(): Promise<void> {
     
     logger.info(`P2P node started: ${peerId}`);
     logger.info(`P2P addresses: ${addrs.join(', ')}`);
+
+    // Wait for peers to connect, then replicate existing blobs
+    setTimeout(async () => {
+      try {
+        logger.info('Triggering replication of existing blobs after peer connection delay');
+        await replicationService.replicateExistingBlobs();
+      } catch (error: any) {
+        logger.warn('Failed to replicate existing blobs on startup', { error: error.message });
+      }
+    }, 15000); // Wait 15 seconds for peers to connect
   } catch (error) {
     logger.error('Failed to start P2P service', error);
     // Don't fail startup - P2P is optional, HTTP still works
@@ -306,82 +319,56 @@ async function initializeP2P(): Promise<void> {
  * Initialize contract integration and register node on-chain
  */
 async function initializeContractIntegration(): Promise<void> {
-  const rpcUrl = process.env.RPC_URL;
-  const privateKey = process.env.PRIVATE_KEY;
-  const registryAddress = process.env.VAULT_REGISTRY_ADDRESS;
+  const rpcUrl = config.rpcUrl;
+  const privateKey = process.env.PRIVATE_KEY; // Private key not stored in config for security
+  const registryAddress = config.registryAddress;
 
-  // Skip if not configured
-  if (!rpcUrl || !privateKey || !registryAddress) {
-    logger.info('Contract integration not configured, skipping on-chain registration');
+  // Skip if RPC or registry not configured
+  if (!rpcUrl || !registryAddress) {
+    logger.info('Contract integration not configured (missing rpcUrl or registryAddress in config)');
     return;
   }
 
   try {
-    logger.info('Initializing contract integration...');
+    logger.info('Initializing contract integration...', {
+      readOnly: !privateKey,
+      rpcUrl,
+      registryAddress
+    });
     
     await contractIntegrationService.initialize({
       rpcUrl,
-      privateKey,
+      privateKey, // Optional - if not provided, runs in read-only mode
       registryAddress,
       incentivesAddress: process.env.VAULT_INCENTIVES_ADDRESS
     });
 
     const signerAddress = await contractIntegrationService.getSignerAddress();
-    logger.info(`Contract signer: ${signerAddress}`);
-
-    // Check if already registered
-    const existingNodeId = await contractIntegrationService.getNode(
-      ethers.keccak256(ethers.toUtf8Bytes(config.nodeId))
-    );
-
-    if (existingNodeId && existingNodeId.active) {
-      logger.info(`Node already registered: ${existingNodeId.nodeId}`);
-      return;
-    }
-
-    // Generate node public key (deterministic from node ID)
-    const nodeKeyHash = ethers.keccak256(ethers.toUtf8Bytes(config.nodeId));
-    const publicKey = nodeKeyHash; // Using hash as public key for now
-
-    // Create metadata
-    const metadata = {
-      name: config.nodeId,
-      version: '1.0.0',
-      url: config.nodeUrl,
-      capabilities: ['storage', 'replication', 'consensus'],
-      shards: config.nodeShards,
-      timestamp: Date.now()
-    };
-    const metadataHash = ethers.keccak256(
-      ethers.toUtf8Bytes(JSON.stringify(metadata))
-    );
-
-    // Register node on-chain
-    logger.info('Registering node on-chain...');
-    const nodeId = await contractIntegrationService.registerNode(
-      publicKey,
-      config.nodeUrl,
-      metadataHash
-    );
-
-    if (nodeId) {
-      logger.info(`✅ Node registered on-chain: ${nodeId}`);
-      logger.info(`   Public Key: ${publicKey}`);
-      logger.info(`   URL: ${config.nodeUrl}`);
+    
+    if (!signerAddress) {
+      logger.info('Contract integration initialized in read-only mode (no private key)');
+      logger.info('Node can verify registrations but cannot self-register');
     } else {
-      logger.warn('Node registration returned no ID');
+      logger.info(`Contract signer: ${signerAddress}`);
+      logger.info('Node registration will happen after P2P service starts');
     }
   } catch (error: any) {
-    // Don't fail startup if registration fails
-    logger.warn('Contract integration failed (node will run without on-chain registration)', error.message);
+    logger.warn('Contract integration failed', error.message);
   }
 }
 
 /**
  * Initialize storage authorization service for on-chain verification
+ * Only needed when using application-specific authorization (not numerical sharding)
  */
 async function initializeStorageAuthorization(): Promise<void> {
-  const rpcUrl = process.env.RPC_URL;
+  // Skip if using numerical sharding (REQUIRE_APP_REGISTRY=false)
+  if (!config.requireAppRegistry) {
+    logger.info('Storage authorization service skipped (using numerical sharding, REQUIRE_APP_REGISTRY=false)');
+    return;
+  }
+
+  const rpcUrl = config.rpcUrl;
 
   // Skip if not configured
   if (!rpcUrl) {
@@ -391,7 +378,7 @@ async function initializeStorageAuthorization(): Promise<void> {
   }
 
   try {
-    logger.info('Initializing storage authorization service...');
+    logger.info('Initializing storage authorization service (application-specific authorization)...');
     
     await storageAuthorizationService.initialize({
       rpcUrl,
@@ -454,16 +441,14 @@ async function start(): Promise<void> {
       logger.info('🚀 HASHD Vault v1.0.0');
       logger.info(`   Environment: ${config.nodeEnv}`);
       logger.info(`   Node ID: ${config.nodeId}`);
-      logger.info(`   Port: ${config.port}`);
-      logger.info(`   Node URL: ${config.nodeUrl}`);
+      logger.info(`   HTTP API Port: ${config.port} (local access only)`);
       logger.info(`   Public Key: ${nodePublicKey}`);
       logger.info(`   Data directory: ${config.dataDir}`);
       logger.info(`   Max blob size: ${config.maxBlobSizeMB}MB`);
       logger.info(`   Max storage: ${config.maxStorageGB}GB`);
       logger.info(`   Replication: ${config.replicationEnabled ? 'enabled' : 'disabled'}`);
       logger.info(`   Blocked content: ${config.enableBlockedContent ? 'enabled' : 'disabled'}`);
-      logger.info(`   P2P Discovery: ${config.p2pEnabled ? 'enabled' : 'disabled'}`);
-      if (config.p2pEnabled && p2pService.isStarted()) {
+      if (p2pService.isStarted()) {
         logger.info(`   P2P Peer ID: ${p2pService.getPeerId()}`);
       }
       logger.info('✅ Server ready for requests');

@@ -12,20 +12,22 @@ import { logger } from '../utils/logger.js';
 
 // ABI fragments for the contracts we need
 const NODE_REGISTRY_ABI = [
-  'function getNode(bytes32 nodeId) view returns (tuple(address owner, bytes publicKey, string url, bytes32 metadataHash, uint256 registeredAt, bool active))',
-  'function getAllNodes(uint256 offset, uint256 limit) view returns (bytes32[])',
+  'function getNode(bytes32 nodeId) view returns (tuple(address owner, bytes publicKey, string peerId, bytes32 metadataHash, uint256 registeredAt, bool active))',
   'function getActiveNodes() view returns (bytes32[])',
-  'function getNodeByOwner(address owner) view returns (bytes32)',
-  'function isNodeActive(bytes32 nodeId) view returns (bool)',
+  'function getAllNodes(uint256 offset, uint256 limit) view returns (bytes32[])',
   'function getNodeCount() view returns (uint256 total, uint256 active)',
-  'function registerNode(bytes publicKey, string url, bytes32 metadataHash) returns (bytes32)',
-  'function updateNode(string url, bytes32 metadataHash)',
+  'function getNodeByOwner(address owner) view returns (bytes32)',
+  'function getNodeStake(bytes32 nodeId) view returns (uint256)',
+  'function isNodeActive(bytes32 nodeId) view returns (bool)',
+  'function registerNode(bytes publicKey, string peerId, bytes32 metadataHash) returns (bytes32)',
+  'function updateNode(string peerId, bytes32 metadataHash)',
   'function unregisterNode()',
+  'function deregisterNode(bytes32 nodeId)',
   'function minVersion() view returns (string)',
   'function setMinVersion(string version)',
   'event NodeRegistered(bytes32 indexed nodeId, address indexed owner)',
-  'event NodeUpdated(bytes32 indexed nodeId)',
-  'event NodeUnregistered(bytes32 indexed nodeId)',
+  'event NodeUpdated(bytes32 indexed nodeId, string peerId, bytes32 metadataHash)',
+  'event NodeDeactivated(bytes32 indexed nodeId)',
   'event MinVersionUpdated(string version)'
 ];
 
@@ -124,7 +126,15 @@ export class ContractIntegrationService {
   /**
    * Get node information from registry
    */
-  async getNode(nodeId: string): Promise<NodeInfo | null> {
+  async getNode(nodeId: string): Promise<{
+    nodeId: string;
+    owner: string;
+    publicKey: string;
+    peerId: string;
+    metadataHash: string;
+    registeredAt: number;
+    active: boolean;
+  } | null> {
     if (!this.nodeRegistry) throw new Error('Registry not initialized');
 
     try {
@@ -133,14 +143,76 @@ export class ContractIntegrationService {
       return {
         nodeId,
         owner: node.owner,
-        publicKey: node.publicKey,
-        url: node.url,
+        publicKey: ethers.hexlify(node.publicKey),
+        peerId: node.peerId,
         metadataHash: node.metadataHash,
         registeredAt: Number(node.registeredAt),
         active: node.active
       };
     } catch (error: any) {
       logger.error('Failed to get node', { nodeId, error: error.message });
+      return null;
+    }
+  }
+
+  /**
+   * Get node ID by owner address
+   */
+  async getNodeByOwner(owner: string): Promise<string | null> {
+    if (!this.nodeRegistry) throw new Error('Registry not initialized');
+
+    try {
+      const nodeId = await this.nodeRegistry.getNodeByOwner(owner);
+      // Check if nodeId is zero (not registered)
+      if (nodeId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+        return null;
+      }
+      return nodeId;
+    } catch (error: any) {
+      logger.error('Failed to get node by owner', { owner, error: error.message });
+      return null;
+    }
+  }
+
+  /**
+   * Get node ID by peer ID
+   */
+  async getNodeByPeerId(peerId: string): Promise<string | null> {
+    if (!this.nodeRegistry) throw new Error('Registry not initialized');
+
+    try {
+      // Get all active nodes and check if any match this peer ID
+      const nodeIds = await this.nodeRegistry.getActiveNodes();
+      logger.info('Checking peer ID registration', { 
+        lookingFor: peerId,
+        totalNodes: nodeIds.length 
+      });
+      
+      for (const nodeId of nodeIds) {
+        try {
+          const node = await this.nodeRegistry.getNode(nodeId);
+          logger.info('Comparing peer IDs', {
+            nodeId: nodeId.slice(0, 10) + '...',
+            registered: node.peerId,
+            current: peerId,
+            match: node.peerId === peerId,
+            active: node.active
+          });
+          
+          if (node.peerId === peerId && node.active) {
+            logger.info('Found matching peer ID registration', { nodeId, peerId: peerId.slice(0, 12) + '...' });
+            return nodeId;
+          }
+        } catch (error: any) {
+          logger.warn('Failed to fetch node for comparison', { nodeId: nodeId.slice(0, 10) + '...', error: error.message });
+          continue;
+        }
+      }
+      
+      logger.warn('No matching peer ID found in registry', { peerId: peerId.slice(0, 12) + '...' });
+      return null;
+    } catch (error) {
+      logger.warn('Failed to get node by peer ID', { peerId: peerId.slice(0, 12) + '...', error });
       return null;
     }
   }
@@ -235,36 +307,36 @@ export class ContractIntegrationService {
    */
   async registerNode(
     publicKey: string,
-    url: string,
+    peerId: string,
     metadataHash: string
   ): Promise<string | null> {
     if (!this.nodeRegistry) throw new Error('Registry not initialized');
     if (!this.signer) throw new Error('Signer required for registration');
 
     try {
-      const tx = await this.nodeRegistry.registerNode(publicKey, url, metadataHash);
+      const tx = await this.nodeRegistry.registerNode(publicKey, peerId, metadataHash);
       const receipt = await tx.wait();
 
       // Extract nodeId from event
-      const event = receipt.logs.find((log: any) => {
-        try {
-          const parsed = this.nodeRegistry!.interface.parseLog(log);
-          return parsed?.name === 'NodeRegistered';
-        } catch {
-          return false;
-        }
-      });
+      const event = receipt.logs
+        .map((log: any) => {
+          try {
+            return this.nodeRegistry!.interface.parseLog(log);
+          } catch {
+            return null;
+          }
+        })
+        .find((e: any) => e && e.name === 'NodeRegistered');
 
       if (event) {
-        const parsed = this.nodeRegistry.interface.parseLog(event);
-        const nodeId = parsed?.args.nodeId;
-        logger.info('Node registered', { nodeId, url });
+        const nodeId = event.args.nodeId;
+        logger.info('Node registered', { nodeId, peerId });
         return nodeId;
       }
 
       return null;
     } catch (error: any) {
-      logger.error('Failed to register node', error);
+      logger.error('Failed to register node', { message: error.message, stack: error.stack });
       throw error;
     }
   }
@@ -272,14 +344,14 @@ export class ContractIntegrationService {
   /**
    * Update node metadata (requires signer)
    */
-  async updateNode(url: string, metadataHash: string): Promise<boolean> {
+  async updateNode(peerId: string, metadataHash: string): Promise<boolean> {
     if (!this.nodeRegistry) throw new Error('Registry not initialized');
     if (!this.signer) throw new Error('Signer required for update');
 
     try {
-      const tx = await this.nodeRegistry.updateNode(url, metadataHash);
+      const tx = await this.nodeRegistry.updateNode(peerId, metadataHash);
       await tx.wait();
-      logger.info('Node updated', { url });
+      logger.info('Node updated', { peerId });
       return true;
     } catch (error: any) {
       logger.error('Failed to update node', error);

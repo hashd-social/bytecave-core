@@ -3,6 +3,7 @@
  */
 
 import dotenv from 'dotenv';
+import { ethers } from 'ethers';
 import { Config } from '../types/index.js';
 import { getConfigManager } from './config-manager.js';
 
@@ -78,8 +79,16 @@ export const config: Config = {
   nodeUrl: getConfigValue(persistedConfig.nodeUrl, getEnv('NODE_URL', 'http://localhost:3004')),
   
   // Node identity for P2P and registration
-  publicKey: getConfigValue(persistedConfig.publicKey, process.env.PUBLIC_KEY || ''),
+  // Auto-generate publicKey from nodeId if not provided
+  publicKey: getConfigValue(
+    persistedConfig.publicKey, 
+    process.env.PUBLIC_KEY || ethers.keccak256(ethers.toUtf8Bytes(nodeId))
+  ),
   ownerAddress: getConfigValue(persistedConfig.ownerAddress, process.env.OWNER_ADDRESS || ''),
+
+  // Contract integration - config.json takes precedence
+  rpcUrl: getConfigValue(persistedConfig.rpcUrl, process.env.RPC_URL || 'http://127.0.0.1:8545'),
+  registryAddress: getConfigValue(persistedConfig.registryAddress, process.env.VAULT_REGISTRY_ADDRESS || ''),
 
   // P2P Configuration - config.json takes precedence
   p2pEnabled: getEnvBoolean('P2P_ENABLED', true),
@@ -150,6 +159,10 @@ configManager.updateNodeConfig({
   // Identity
   publicKey: config.publicKey,
   ownerAddress: config.ownerAddress,
+  
+  // Contract Integration
+  rpcUrl: config.rpcUrl,
+  registryAddress: config.registryAddress,
   
   // P2P Configuration
   p2pBootstrapPeers: config.p2pBootstrapPeers,

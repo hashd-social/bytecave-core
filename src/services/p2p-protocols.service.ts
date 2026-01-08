@@ -18,6 +18,7 @@ import { config } from '../config/index.js';
 
 // Protocol identifiers
 export const PROTOCOL_REPLICATE = '/bytecave/replicate/1.0.0';
+export const PROTOCOL_STORE = '/bytecave/store/1.0.0'; // Browser-to-node storage with authorization
 export const PROTOCOL_BLOB = '/bytecave/blob/1.0.0';
 export const PROTOCOL_HEALTH = '/bytecave/health/1.0.0';
 export const PROTOCOL_INFO = '/bytecave/info/1.0.0';
@@ -33,6 +34,7 @@ interface ReplicateRequest {
   sender?: string;
   timestamp?: number;
   metadata?: Record<string, any>;
+  authorization?: any; // For browser-to-node storage with signed authorization
 }
 
 interface ReplicateResponse {
@@ -110,6 +112,8 @@ class P2PProtocolsService {
     // Register protocol handlers - signature is (stream: Stream, connection: Connection)
     node.handle(PROTOCOL_REPLICATE, (stream: Stream, connection: Connection) => 
       this.handleReplicate(stream, connection));
+    node.handle(PROTOCOL_STORE, (stream: Stream, connection: Connection) => 
+      this.handleStore(stream, connection));
     node.handle(PROTOCOL_BLOB, (stream: Stream, connection: Connection) => 
       this.handleBlob(stream, connection));
     node.handle(PROTOCOL_HEALTH, (stream: Stream, connection: Connection) => 
@@ -120,7 +124,7 @@ class P2PProtocolsService {
       this.handleHaveList(stream, connection));
 
     logger.info('P2P protocols registered', {
-      protocols: [PROTOCOL_REPLICATE, PROTOCOL_BLOB, PROTOCOL_HEALTH, PROTOCOL_INFO, PROTOCOL_HAVE_LIST]
+      protocols: [PROTOCOL_REPLICATE, PROTOCOL_STORE, PROTOCOL_BLOB, PROTOCOL_HEALTH, PROTOCOL_INFO, PROTOCOL_HAVE_LIST]
     });
   }
 
@@ -131,6 +135,7 @@ class P2PProtocolsService {
     if (!this.node) return;
 
     this.node.unhandle(PROTOCOL_REPLICATE);
+    this.node.unhandle(PROTOCOL_STORE);
     this.node.unhandle(PROTOCOL_BLOB);
     this.node.unhandle(PROTOCOL_HEALTH);
     this.node.unhandle(PROTOCOL_INFO);
@@ -161,42 +166,39 @@ class P2PProtocolsService {
         return;
       }
 
-      // SECURITY CHECK 2: Verify peer is an authorized VaultNode (registered on-chain)
+      // SECURITY CHECK 2: Verify peer is an authorized VaultNode (registered on-chain by peer ID)
       const { contractIntegrationService } = await import('./contract-integration.service.js');
       
-      // Get peer's public key from libp2p connection
-      const peerPublicKey = connection.remotePeer.publicKey;
-      if (!peerPublicKey) {
-        logger.warn('Replication rejected: Peer has no public key', { peerId: remotePeer });
-        await this.writeMessage(stream, { success: false, error: 'Peer authentication failed' });
-        return;
-      }
-      
-      // Convert libp2p public key to bytes for on-chain lookup
-      // The public key raw property is a Uint8Array
-      const publicKeyBytes = peerPublicKey.raw;
-      const publicKeyHex = '0x' + Buffer.from(publicKeyBytes).toString('hex');
-      
-      // Hash the public key to get nodeId (same as contract does)
-      const { ethers } = await import('ethers');
-      const nodeId = ethers.keccak256(publicKeyHex);
-      
-      // Verify node is registered and active in VaultNodeRegistry
-      const isAuthorized = await contractIntegrationService.isNodeActive(nodeId);
-      if (!isAuthorized) {
-        logger.warn('Replication rejected: Peer not registered in VaultNodeRegistry', { 
-          peerId: remotePeer,
-          nodeId,
-          publicKey: publicKeyHex.slice(0, 20) + '...'
+      if (contractIntegrationService.isInitialized()) {
+        // Check if this peer ID is registered on-chain
+        const nodeId = await contractIntegrationService.getNodeByPeerId(remotePeer);
+        
+        if (!nodeId) {
+          logger.warn('Replication rejected: Peer not registered in VaultNodeRegistry', { 
+            peerId: remotePeer.slice(0, 12) + '...'
+          });
+          await this.writeMessage(stream, { success: false, error: 'Peer not authorized' });
+          return;
+        }
+        
+        // Verify node is active
+        const node = await contractIntegrationService.getNode(nodeId);
+        if (!node || !node.active) {
+          logger.warn('Replication rejected: Peer not active in VaultNodeRegistry', { 
+            peerId: remotePeer.slice(0, 12) + '...',
+            nodeId: nodeId.slice(0, 16) + '...'
+          });
+          await this.writeMessage(stream, { success: false, error: 'Peer not authorized' });
+          return;
+        }
+        
+        logger.debug('✅ Peer authorization verified via VaultNodeRegistry', { 
+          peerId: remotePeer.slice(0, 12) + '...',
+          nodeId: nodeId.slice(0, 16) + '...'
         });
-        await this.writeMessage(stream, { success: false, error: 'Peer not authorized' });
-        return;
+      } else {
+        logger.debug('Contract integration not initialized, skipping peer authorization check');
       }
-      
-      logger.debug('✅ Peer authorization verified via VaultNodeRegistry', { 
-        peerId: remotePeer,
-        nodeId: nodeId.slice(0, 16) + '...'
-      });
 
       // Read the request
       const request = await this.readMessage<ReplicateRequest>(stream);
@@ -227,9 +229,11 @@ class P2PProtocolsService {
 
       // SECURITY CHECK 5: Verify CID exists on-chain in authorized contracts (for messages only)
       // Media content is verified by signature alone - no on-chain CID storage
+      // Skip this check when REQUIRE_APP_REGISTRY is false
       const isMediaContent = request.contentType === 'media';
+      const requireAppRegistry = process.env.REQUIRE_APP_REGISTRY !== 'false';
       
-      if (!isMediaContent) {
+      if (!isMediaContent && requireAppRegistry) {
         // For messages/posts: require on-chain CID verification
         const { storageAuthorizationService } = await import('./storage-authorization.service.js');
         const onChainVerification = await storageAuthorizationService.verifyCIDOnChain(request.cid);
@@ -246,7 +250,9 @@ class P2PProtocolsService {
           });
           return;
         }
-      } else {
+      }
+      
+      if (isMediaContent && requireAppRegistry) {
         // For media: verify sender signature was provided
         if (!request.sender) {
           logger.warn('Replication rejected: Media content missing sender', { 
@@ -293,6 +299,185 @@ class P2PProtocolsService {
 
     } catch (error: any) {
       logger.error('Replicate handler error', { error: error.message });
+      try {
+        await this.writeMessage(stream, { success: false, error: error.message });
+      } catch {
+        // Stream may be closed
+      }
+    }
+  }
+
+  /**
+   * Handle incoming storage request from browser (with authorization)
+   * This protocol accepts storage requests from browsers with signed authorization
+   */
+  private async handleStore(stream: Stream, connection: Connection): Promise<void> {
+    const remotePeer = connection.remotePeer.toString();
+    console.log('[P2P Store] Received store request from:', remotePeer.slice(0, 12));
+    logger.debug('Handling store request from browser', { from: remotePeer });
+
+    try {
+      // Read the request
+      const request = await this.readMessage<ReplicateRequest>(stream);
+      
+      if (!request || !request.cid || !request.ciphertext) {
+        await this.writeMessage(stream, { success: false, error: 'Invalid request' });
+        return;
+      }
+
+      // Check if this node is registered on-chain (only registered nodes accept storage)
+      const { contractIntegrationService } = await import('./contract-integration.service.js');
+      const { p2pService } = await import('./p2p.service.js');
+      
+      if (contractIntegrationService.isInitialized()) {
+        try {
+          // Get this node's peer ID
+          const myPeerId = p2pService.getPeerId();
+          if (!myPeerId) {
+            logger.warn('Store rejected: P2P peer ID not available', { cid: request.cid });
+            await this.writeMessage(stream, { 
+              success: false, 
+              error: 'Node not configured properly (no peer ID)' 
+            });
+            return;
+          }
+
+          // Check if this peer ID is registered on-chain
+          const nodeId = await contractIntegrationService.getNodeByPeerId(myPeerId);
+          
+          if (!nodeId) {
+            logger.warn('Store rejected: Node peer ID not registered on-chain', { 
+              cid: request.cid, 
+              peerId: myPeerId.slice(0, 12) + '...' 
+            });
+            await this.writeMessage(stream, { 
+              success: false, 
+              error: 'Node not registered on-chain. Only registered nodes accept storage.' 
+            });
+            return;
+          }
+
+          const node = await contractIntegrationService.getNode(nodeId);
+          if (!node || !node.active) {
+            logger.warn('Store rejected: Node not active on-chain', { cid: request.cid, nodeId });
+            await this.writeMessage(stream, { 
+              success: false, 
+              error: 'Node not active on-chain. Only active registered nodes accept storage.' 
+            });
+            return;
+          }
+
+          logger.debug('Node registration verified', { 
+            nodeId, 
+            peerId: myPeerId.slice(0, 12) + '...', 
+            active: node.active 
+          });
+        } catch (error: any) {
+          logger.warn('Store rejected: Could not verify node registration', { 
+            cid: request.cid, 
+            error: error.message 
+          });
+          await this.writeMessage(stream, { 
+            success: false, 
+            error: 'Could not verify node registration' 
+          });
+          return;
+        }
+      } else {
+        // Contract integration not initialized - reject to be safe
+        logger.warn('Store rejected: Contract integration not initialized', { cid: request.cid });
+        await this.writeMessage(stream, { 
+          success: false, 
+          error: 'Node not configured for on-chain verification' 
+        });
+        return;
+      }
+
+      // Verify authorization only if using application-specific authorization (not numerical sharding)
+      const { config } = await import('../config/index.js');
+      if (config.requireAppRegistry) {
+        if (request.authorization) {
+          const { storageAuthorizationService } = await import('./storage-authorization.service.js');
+          
+          // Verify the authorization signature
+          const result = await storageAuthorizationService.verifyAuthorization(
+            request.authorization,
+            request.authorization.contentHash
+          );
+
+          if (!result.authorized) {
+            logger.warn('Store rejected: Invalid authorization signature', { 
+              cid: request.cid,
+              sender: request.authorization.sender,
+              reason: result.error 
+            });
+            await this.writeMessage(stream, { success: false, error: result.error || 'Invalid authorization' });
+            return;
+          }
+
+          logger.debug('Browser storage authorization verified', { 
+            cid: request.cid, 
+            sender: request.authorization.sender 
+          });
+        } else {
+          // No authorization provided - reject
+          logger.warn('Store rejected: No authorization provided', { cid: request.cid });
+          await this.writeMessage(stream, { success: false, error: 'Authorization required' });
+          return;
+        }
+      } else {
+        // Using numerical sharding - skip authorization check
+        logger.debug('Skipping authorization check (numerical sharding mode)', { cid: request.cid });
+      }
+
+      // Check if we already have this blob
+      const exists = await storageService.hasBlob(request.cid);
+      if (exists) {
+        logger.debug('Blob already stored', { cid: request.cid });
+        await this.writeMessage(stream, { success: true, alreadyStored: true });
+        return;
+      }
+
+      // Store the blob with metadata
+      console.log('[P2P Store] Storing blob with CID:', request.cid);
+      const ciphertext = Buffer.from(request.ciphertext, 'base64');
+      await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
+        appId: request.appId,
+        contentType: request.contentType,
+        sender: request.authorization?.sender,
+        timestamp: request.authorization?.timestamp,
+        metadata: request.metadata,
+        fromPeer: remotePeer
+      });
+
+      console.log('[P2P Store] Blob stored successfully, CID:', request.cid);
+      logger.info('Blob stored from browser via P2P', { 
+        cid: request.cid, 
+        from: remotePeer,
+        sender: request.authorization?.sender
+      });
+      
+      console.log('[P2P Store] Triggering replication for CID:', request.cid);
+      
+      // Trigger replication to other nodes (async, don't wait)
+      const { replicationService } = await import('./replication.service.js');
+      replicationService.replicateToAll(request.cid, ciphertext, request.mimeType, {
+        contentType: request.contentType
+      }).then((results) => {
+        console.log('[P2P Store] Replication completed:', results.length, 'successful replications');
+      }).catch((err: any) => {
+        console.error('[P2P Store] Replication failed:', err.message);
+        logger.warn('Replication failed for browser-stored blob', { 
+          cid: request.cid, 
+          error: err.message 
+        });
+      });
+      
+      await this.writeMessage(stream, { success: true });
+
+    } catch (error: any) {
+      console.error('[P2P Store] ERROR in handleStore:', error.message, error.stack);
+      logger.error('Store handler error', { error: error.message });
       try {
         await this.writeMessage(stream, { success: false, error: error.message });
       } catch {
@@ -472,10 +657,37 @@ class P2PProtocolsService {
       metadata?: Record<string, any>;
     }
   ): Promise<boolean> {
-    if (!this.node) return false;
+    if (!this.node) {
+      logger.warn('[P2P-PROTOCOLS] Node not initialized for replication', { peerId: peerId.slice(0, 12), cid });
+      return false;
+    }
+
+    logger.info('[P2P-PROTOCOLS] Starting replication to peer', {
+      peerId: peerId.slice(0, 12),
+      cid,
+      protocol: PROTOCOL_REPLICATE,
+      ciphertextSize: ciphertext.length
+    });
 
     try {
-      const stream = await this.node.dialProtocol(peerId as any, PROTOCOL_REPLICATE);
+      // Import peerIdFromString to convert string to PeerId
+      const { peerIdFromString } = await import('@libp2p/peer-id');
+      const peerIdObj = peerIdFromString(peerId);
+      
+      logger.info('[P2P-PROTOCOLS] Attempting to dial protocol', {
+        peerId: peerId.slice(0, 12),
+        peerIdLength: peerId.length,
+        fullPeerId: peerId,
+        protocol: PROTOCOL_REPLICATE,
+        connections: this.node.getConnections(peerIdObj).length
+      });
+      
+      const stream = await this.node.dialProtocol(peerIdObj, PROTOCOL_REPLICATE);
+      
+      logger.info('[P2P-PROTOCOLS] Protocol dial successful, sending request', {
+        peerId: peerId.slice(0, 12),
+        cid
+      });
 
       const request: ReplicateRequest = {
         cid,
@@ -489,20 +701,41 @@ class P2PProtocolsService {
       };
 
       await this.writeMessage(stream, request);
+      logger.info('[P2P-PROTOCOLS] Request sent, waiting for response', {
+        peerId: peerId.slice(0, 12),
+        cid
+      });
+      
       const response = await this.readMessage<ReplicateResponse>(stream);
+      
+      logger.info('[P2P-PROTOCOLS] Response received', {
+        peerId: peerId.slice(0, 12),
+        cid,
+        success: response?.success,
+        error: response?.error
+      });
 
       await stream.close();
 
       if (response?.success) {
-        logger.debug('Replicated to peer via P2P', { peerId, cid });
+        logger.info('[P2P-PROTOCOLS] Replication successful', { peerId: peerId.slice(0, 12), cid });
         return true;
       } else {
-        logger.warn('Replication failed', { peerId, cid, error: response?.error });
+        logger.warn('[P2P-PROTOCOLS] Replication failed - peer rejected', { 
+          peerId: peerId.slice(0, 12), 
+          cid, 
+          error: response?.error 
+        });
         return false;
       }
 
     } catch (error: any) {
-      logger.warn('Failed to replicate to peer', { peerId, cid, error: error.message });
+      logger.warn('[P2P-PROTOCOLS] Failed to replicate to peer', { 
+        peerId: peerId.slice(0, 12), 
+        cid, 
+        error: error.message,
+        stack: error.stack?.split('\n').slice(0, 3).join('\n')
+      });
       return false;
     }
   }

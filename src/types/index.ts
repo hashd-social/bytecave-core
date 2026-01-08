@@ -150,6 +150,9 @@ export interface Config {
   // Node identity for P2P and registration
   publicKey: string;
   ownerAddress: string;
+  // Contract integration
+  rpcUrl: string;
+  registryAddress: string;
   // P2P Configuration
   p2pEnabled: boolean;
   p2pListenAddresses: string[];

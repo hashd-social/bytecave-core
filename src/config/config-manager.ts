@@ -18,6 +18,10 @@ export interface PersistedConfig {
   publicKey?: string;
   ownerAddress?: string;
   
+  // Contract Integration
+  rpcUrl?: string;
+  registryAddress?: string;
+  
   // P2P Configuration
   p2pBootstrapPeers: string[];
   p2pRelayPeers: string[];
