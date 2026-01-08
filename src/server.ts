@@ -382,11 +382,10 @@ async function initializeContractIntegration(): Promise<void> {
  */
 async function initializeStorageAuthorization(): Promise<void> {
   const rpcUrl = process.env.RPC_URL;
-  const groupFactoryAddress = process.env.GROUP_FACTORY_ADDRESS;
 
   // Skip if not configured
-  if (!rpcUrl || !groupFactoryAddress) {
-    logger.warn('Storage authorization not configured (GROUP_FACTORY_ADDRESS required)');
+  if (!rpcUrl) {
+    logger.warn('Storage authorization not configured (RPC_URL required)');
     logger.warn('Storage requests will fail without authorization service');
     return;
   }
@@ -396,7 +395,6 @@ async function initializeStorageAuthorization(): Promise<void> {
     
     await storageAuthorizationService.initialize({
       rpcUrl,
-      groupFactoryAddress,
       messageStorageAddress: process.env.MESSAGE_STORAGE_ADDRESS,
       postStorageAddress: process.env.POST_STORAGE_ADDRESS
     });

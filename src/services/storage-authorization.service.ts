@@ -1,12 +1,15 @@
 /**
- * HASHD Vault - Storage Authorization Service
+ * HASHD Vault - Storage Authorization Service (Numerical Sharding)
  * 
- * Verifies on-chain authorization before accepting storage requests.
- * Implements Direct Storage Spec for:
- * - Group posts (membership verification)
- * - Group comments (membership verification)
- * - Messages (participant verification)
- * - Token distribution (ownership verification)
+ * Verifies authorization before accepting storage requests.
+ * With numerical sharding, authorization is content-agnostic:
+ * - Signature verification (EIP-191)
+ * - Timestamp freshness
+ * - Nonce uniqueness (replay protection)
+ * - Content hash match
+ * 
+ * Content-specific authorization (group membership, etc.) is handled
+ * by the application layer, not the storage layer.
  */
 
 import { ethers } from 'ethers';
@@ -16,43 +19,23 @@ import {
   AuthorizationVerificationResult
 } from '../types/index.js';
 
-// Contract ABIs for authorization verification
-const USER_PROFILE_ABI = [
-  'function isMember(address user, address groupToken) view returns (bool)'
-];
-
-const POST_STORAGE_ABI = [
-  'function getPost(uint256 postId) view returns (uint256 id, address author, string ipfsHash, uint256 upvotes, uint256 downvotes, uint256 timestamp, uint8 accessLevel, address groupContract, bool isDeleted)',
-  'function getPostByCID(string cid) view returns (uint256 postId, bool exists)'
-];
-
-const GROUP_FACTORY_ABI = [
-  'function getGroupByToken(address tokenAddr) view returns (tuple(string title, string description, string imageURI, address owner, address tokenAddress, address nftAddress, address postsAddress))'
-];
-
-const MESSAGE_STORAGE_ABI = [
-  'function messages(bytes32 messageId) view returns (tuple(address sender, address[] recipients, string contentCID, uint256 timestamp, bool exists))',
-  'function getMessageByCID(string cid) view returns (bytes32 messageId, bool exists)'
-];
-
-// TokenDistribution ABI - for future implementation when contract has CID lookup
-// const TOKEN_DISTRIBUTION_ABI = [
-//   'function distributions(uint256 distributionId) view returns (tuple(address token, string metadataCID, uint256 timestamp, bool exists))'
-// ];
-
-// Signature message format (v2 - includes appId and contentType)
+// Signature message format (v3 - numerical sharding, content-agnostic)
 const SIGNATURE_MESSAGE_TEMPLATE = `HASHD Vault Storage Request
-Type: {type}
 Content Hash: {contentHash}
-App ID: {appId}
-Content Type: {contentType}
-Context: {context}
 Timestamp: {timestamp}
 Nonce: {nonce}`;
 
+// Contract ABIs for on-chain verification
+const MESSAGE_STORAGE_ABI = [
+  'function getMessageByCID(string cid) view returns (tuple(bool exists, address sender, uint256 timestamp))'
+];
+
+const POST_STORAGE_ABI = [
+  'function getPostByCID(string cid) view returns (tuple(bool exists, address author, uint256 timestamp))'
+];
+
 export class StorageAuthorizationService {
   private provider: ethers.Provider | null = null;
-  private groupFactoryAddress: string | null = null;
   private messageStorageAddress: string | null = null;
   private postStorageAddress: string | null = null;
   private initialized = false;
@@ -73,19 +56,16 @@ export class StorageAuthorizationService {
    */
   async initialize(config: {
     rpcUrl: string;
-    groupFactoryAddress: string;
     messageStorageAddress?: string;
     postStorageAddress?: string;
   }): Promise<void> {
     try {
       this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
-      this.groupFactoryAddress = config.groupFactoryAddress;
       this.messageStorageAddress = config.messageStorageAddress || null;
       this.postStorageAddress = config.postStorageAddress || null;
       this.initialized = true;
       
       logger.info('Storage authorization service initialized', {
-        groupFactory: config.groupFactoryAddress,
         messageStorage: config.messageStorageAddress || 'not configured',
         postStorage: config.postStorageAddress || 'not configured'
       });
@@ -360,17 +340,12 @@ export class StorageAuthorizationService {
   }
 
   /**
-   * Verify the EIP-191 signature (v2 - includes appId and contentType)
+   * Verify the EIP-191 signature (v3 - numerical sharding, content-agnostic)
    */
   private verifySignature(authorization: StorageAuthorization): boolean {
     try {
-      const context = this.getContextString(authorization);
       const message = SIGNATURE_MESSAGE_TEMPLATE
-        .replace('{type}', authorization.type)
         .replace('{contentHash}', authorization.contentHash)
-        .replace('{appId}', authorization.appId)
-        .replace('{contentType}', authorization.contentType)
-        .replace('{context}', context)
         .replace('{timestamp}', authorization.timestamp.toString())
         .replace('{nonce}', authorization.nonce);
 
@@ -392,268 +367,19 @@ export class StorageAuthorizationService {
   }
 
   /**
-   * Get context string for signature message based on authorization type
-   */
-  private getContextString(authorization: StorageAuthorization): string {
-    switch (authorization.type) {
-      case 'group_post':
-      case 'group_comment':
-        return authorization.groupPostsAddress || '';
-      case 'message':
-        return authorization.threadId || '';
-      case 'token_distribution':
-        return authorization.tokenAddress || '';
-      case 'media':
-        return authorization.metadata?.mediaId || '';
-      default:
-        return '';
-    }
-  }
-
-  /**
-   * Verify on-chain authorization based on type
+   * Verify on-chain authorization (simplified for numerical sharding)
+   * With numerical sharding, authorization is signature-based only.
+   * Content-type specific checks are obsolete.
    */
   private async verifyOnChainAuthorization(
     authorization: StorageAuthorization
   ): Promise<AuthorizationVerificationResult> {
-    switch (authorization.type) {
-      case 'group_post':
-        return this.verifyGroupPostAuthorization(authorization);
-      case 'group_comment':
-        return this.verifyGroupCommentAuthorization(authorization);
-      case 'message':
-        return this.verifyMessageAuthorization(authorization);
-      case 'token_distribution':
-        return this.verifyTokenDistributionAuthorization(authorization);
-      case 'media':
-        return this.verifyMediaAuthorization(authorization);
-      default:
-        return {
-          authorized: false,
-          error: `Unknown authorization type: ${authorization.type}`
-        };
-    }
-  }
-
-  /**
-   * Verify media authorization (sender owns the content)
-   * Media uploads are authorized by signature alone - no on-chain verification needed
-   * The sender field in metadata tracks ownership for future roosting/payment
-   */
-  private async verifyMediaAuthorization(
-    authorization: StorageAuthorization
-  ): Promise<AuthorizationVerificationResult> {
-    // Media authorization is signature-based only
-    // The signature proves the sender owns the content
-    // No additional on-chain checks required
+    // Numerical sharding: signature verification is sufficient
+    // No content-type specific on-chain checks needed
     return {
       authorized: true,
       sender: authorization.sender
     };
-  }
-
-  /**
-   * Verify group post authorization (sender must be group member)
-   */
-  private async verifyGroupPostAuthorization(
-    authorization: StorageAuthorization
-  ): Promise<AuthorizationVerificationResult> {
-    if (!authorization.groupPostsAddress) {
-      return {
-        authorized: false,
-        error: 'groupPostsAddress required for group_post authorization'
-      };
-    }
-
-    try {
-      // Get group token from GroupPosts contract
-      const GROUP_POSTS_ABI = [
-        'function groupToken() view returns (address)',
-        'function userProfile() view returns (address)',
-        'function groupOwner() view returns (address)'
-      ];
-      const groupPostsContract = new ethers.Contract(
-        authorization.groupPostsAddress,
-        GROUP_POSTS_ABI,
-        this.provider
-      );
-
-      const groupTokenAddress = await groupPostsContract.groupToken();
-      const userProfileAddress = await groupPostsContract.userProfile();
-
-      // Check membership via UserProfile
-      const userProfileContract = new ethers.Contract(
-        userProfileAddress,
-        USER_PROFILE_ABI,
-        this.provider
-      );
-
-      const isMember = await userProfileContract.isMember(
-        authorization.sender,
-        groupTokenAddress
-      );
-
-      if (!isMember) {
-        return {
-          authorized: false,
-          error: 'Sender is not a group member',
-          details: {
-            sender: authorization.sender,
-            groupToken: groupTokenAddress
-          }
-        };
-      }
-
-      logger.debug('Group post authorization verified', {
-        sender: authorization.sender,
-        groupPosts: authorization.groupPostsAddress
-      });
-
-      return { authorized: true, sender: authorization.sender };
-    } catch (error: any) {
-      logger.error('Group post authorization check failed', error);
-      return {
-        authorized: false,
-        error: 'Failed to verify group membership',
-        details: { message: error.message }
-      };
-    }
-  }
-
-  /**
-   * Verify group comment authorization (same as group post)
-   */
-  private async verifyGroupCommentAuthorization(
-    authorization: StorageAuthorization
-  ): Promise<AuthorizationVerificationResult> {
-    // Comments have same authorization as posts (must be group member)
-    return this.verifyGroupPostAuthorization(authorization);
-  }
-
-  /**
-   * Verify message authorization (sender must be in participants list)
-   * 
-   * Note: Full thread participant verification happens on-chain when
-   * sendMessage is called. Here we just verify the sender claims to
-   * be a participant, which is sufficient for storage.
-   */
-  private async verifyMessageAuthorization(
-    authorization: StorageAuthorization
-  ): Promise<AuthorizationVerificationResult> {
-    if (!authorization.threadId) {
-      return {
-        authorized: false,
-        error: 'threadId required for message authorization'
-      };
-    }
-
-    if (!authorization.participants || authorization.participants.length < 2) {
-      return {
-        authorized: false,
-        error: 'participants array required with at least 2 addresses'
-      };
-    }
-
-    // Verify threadId matches sorted participants hash
-    // Frontend can use either wallet addresses OR public keys for threadId
-    // Public keys are longer than 42 chars (addresses are 42 with 0x prefix)
-    const sortedParticipants = [...authorization.participants]
-      .map(p => p.toLowerCase())
-      .sort();
-    
-    // Detect if participants are public keys or addresses
-    const isPublicKey = sortedParticipants[0].length > 42;
-    
-    let expectedThreadId: string;
-    if (isPublicKey) {
-      // Public keys use string encoding (matches frontend)
-      expectedThreadId = ethers.solidityPackedKeccak256(
-        ['string', 'string'],
-        sortedParticipants
-      );
-    } else {
-      // Wallet addresses use address[] encoding
-      expectedThreadId = ethers.solidityPackedKeccak256(
-        ['address[]'],
-        [sortedParticipants]
-      );
-    }
-
-    if (authorization.threadId.toLowerCase() !== expectedThreadId.toLowerCase()) {
-      return {
-        authorized: false,
-        error: 'threadId does not match participants hash',
-        details: {
-          provided: authorization.threadId,
-          expected: expectedThreadId,
-          participantsType: isPublicKey ? 'publicKeys' : 'addresses'
-        }
-      };
-    }
-
-    logger.debug('Message authorization verified', {
-      sender: authorization.sender,
-      threadId: authorization.threadId
-    });
-
-    return { authorized: true, sender: authorization.sender };
-  }
-
-  /**
-   * Verify token distribution authorization (sender must be group owner)
-   */
-  private async verifyTokenDistributionAuthorization(
-    authorization: StorageAuthorization
-  ): Promise<AuthorizationVerificationResult> {
-    if (!authorization.tokenAddress) {
-      return {
-        authorized: false,
-        error: 'tokenAddress required for token_distribution authorization'
-      };
-    }
-
-    if (!this.groupFactoryAddress) {
-      return {
-        authorized: false,
-        error: 'GroupFactory address not configured'
-      };
-    }
-
-    try {
-      const groupFactory = new ethers.Contract(
-        this.groupFactoryAddress,
-        GROUP_FACTORY_ABI,
-        this.provider
-      );
-
-      const groupInfo = await groupFactory.getGroupByToken(authorization.tokenAddress);
-      const isOwner = groupInfo.owner.toLowerCase() === authorization.sender.toLowerCase();
-
-      if (!isOwner) {
-        return {
-          authorized: false,
-          error: 'Sender is not the group owner',
-          details: {
-            sender: authorization.sender,
-            owner: groupInfo.owner
-          }
-        };
-      }
-
-      logger.debug('Token distribution authorization verified', {
-        sender: authorization.sender,
-        tokenAddress: authorization.tokenAddress
-      });
-
-      return { authorized: true, sender: authorization.sender };
-    } catch (error: any) {
-      logger.error('Token distribution authorization check failed', error);
-      return {
-        authorized: false,
-        error: 'Failed to verify group ownership',
-        details: { message: error.message }
-      };
-    }
   }
 
   /**

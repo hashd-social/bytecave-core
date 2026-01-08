@@ -27,27 +27,16 @@ import {
 
 /**
  * Validate the authorization object structure
+ * With numerical sharding, we only validate core auth fields.
+ * Content type and metadata are optional and not validated.
  */
 function validateAuthorization(auth: any): auth is StorageAuthorization {
   if (!auth || typeof auth !== 'object') return false;
-  if (!['group_post', 'group_comment', 'message', 'token_distribution', 'media'].includes(auth.type)) return false;
   if (!auth.sender || !ethers.isAddress(auth.sender)) return false;
   if (!auth.signature || typeof auth.signature !== 'string') return false;
   if (!auth.timestamp || typeof auth.timestamp !== 'number') return false;
   if (!auth.nonce || typeof auth.nonce !== 'string') return false;
   if (!auth.contentHash || typeof auth.contentHash !== 'string') return false;
-  
-  // Type-specific validation
-  if (auth.type === 'group_post' || auth.type === 'group_comment') {
-    if (!auth.groupPostsAddress || !ethers.isAddress(auth.groupPostsAddress)) return false;
-  }
-  if (auth.type === 'message') {
-    if (!auth.threadId || typeof auth.threadId !== 'string') return false;
-    if (!auth.participants || !Array.isArray(auth.participants) || auth.participants.length < 2) return false;
-  }
-  if (auth.type === 'token_distribution') {
-    if (!auth.tokenAddress || !ethers.isAddress(auth.tokenAddress)) return false;
-  }
   
   return true;
 }
@@ -111,7 +100,7 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
     if (!authResult.authorized) {
       logger.warn('Authorization failed', {
         sender: authorization.sender,
-        type: authorization.type,
+        contentType: authorization.contentType,
         error: authResult.error
       });
       
@@ -184,7 +173,7 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
       cid, 
       size: ciphertextBuffer.length,
       sender: authorization.sender,
-      type: authorization.type
+      contentType: authorization.contentType
     });
 
     // Check capacity before storing
@@ -247,7 +236,7 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
       cid,
       size: ciphertextBuffer.length,
       sender: authorization.sender,
-      type: authorization.type,
+      contentType: authorization.contentType,
       latency,
       replicas: confirmedReplicas + 1
     });

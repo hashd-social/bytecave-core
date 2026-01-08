@@ -836,37 +836,22 @@ export class ForbiddenError extends VaultError {
 }
 
 // ============================================
-// STORAGE AUTHORIZATION (Direct Storage Spec)
+// STORAGE AUTHORIZATION (Numerical Sharding)
 // ============================================
-
-export type AuthorizationType = 
-  | 'group_post' 
-  | 'group_comment' 
-  | 'message' 
-  | 'token_distribution'
-  | 'media';
+// With numerical sharding, content types are metadata only.
+// Authorization verifies: signature, nonce, timestamp, content hash.
 
 export interface StorageAuthorization {
-  type: AuthorizationType;
   sender: string;              // Ethereum address
-  signature: string;           // EIP-191 signature of (contentHash + appId + contentType + timestamp + nonce)
+  signature: string;           // EIP-191 signature of (contentHash + timestamp + nonce)
   timestamp: number;           // Unix timestamp (ms)
   nonce: string;               // Random nonce for replay protection
-  contentHash: string;         // keccak256(ciphertext)
+  contentHash: string;         // keccak256 hash of ciphertext
   
-  // Application identity (v2)
-  appId: string;               // keccak256(appName) - which app is storing this
-  contentType: string;         // Application-defined content type
-  
-  // Type-specific context
-  groupPostsAddress?: string;  // For group_post, group_comment
-  postId?: number;             // For group_comment
-  threadId?: string;           // For message (bytes32 hex)
-  participants?: string[];     // For message (sorted addresses)
-  tokenAddress?: string;       // For token_distribution
-  
-  // Additional metadata for application use
-  metadata?: Record<string, any>;
+  // Optional metadata (for organization/reference only, not validated)
+  appId?: string;              // Application identifier
+  contentType?: string;        // MIME type or content category
+  metadata?: Record<string, any>; // Additional metadata
 }
 
 export interface AuthorizedStoreRequest {
