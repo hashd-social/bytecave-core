@@ -13,7 +13,64 @@ Decentralized storage node for the ByteCave network. Provides encrypted blob sto
 - **NAT Traversal** - Circuit relay support for NAT'd nodes
 - **HTTP API** - RESTful API for local/admin operations
 - **P2P Protocols** - Health checks, blob retrieval, and storage via libp2p streams
-- **Contract Integration** - On-chain node registration
+- **Contract Integration** - Optional on-chain node registration with auto-register/deregister
+- **Auto-Registration** - Automatic registration on startup when enabled
+- **Auto-Deregistration** - Automatic deregistration when REGISTER_ON_CHAIN=false
+
+## Cryptographic Keys
+
+ByteCave nodes use **two different cryptographic key pairs** for different purposes. Understanding the distinction is critical for proper node operation and registration.
+
+### secp256k1 Key Pair (Contract Registration)
+
+**Purpose:** On-chain node registration and verification
+
+- **Algorithm:** secp256k1 (same as Ethereum)
+- **Public Key Format:** 33 bytes compressed (starts with `0x02` or `0x03`)
+- **Generation:** Deterministically derived from `OWNER_ADDRESS` using `keccak256("bytecave-p2p-identity" + ownerAddress)`
+- **Used For:**
+  - Registering nodes in VaultNodeRegistry contract
+  - On-chain signature verification via `ecrecover`
+  - Proving node ownership
+
+**Where to find it:**
+- Health endpoint: `/health` → `secp256k1PublicKey` field
+- Startup logs: Displayed as "secp256k1 Public Key (for contract registration)"
+- Desktop app: Status tab → "secp256k1 Public Key"
+
+**When to use it:**
+- When registering your node on-chain (via dashboard or desktop app)
+- When providing your public key to contract registration functions
+
+### Ed25519 Key Pair (Storage Proofs)
+
+**Purpose:** Storage proof signing and libp2p identity
+
+- **Algorithm:** Ed25519
+- **Public Key Format:** 44 bytes DER-encoded (starts with `0x302a3005...`)
+- **Generation:** Auto-generated on first startup, stored in `node-key.json`
+- **Used For:**
+  - Signing storage proofs for incentive claims
+  - libp2p peer identity
+  - P2P protocol authentication
+
+**Where to find it:**
+- Health endpoint: `/health` → `publicKey` field
+- Startup logs: Referenced as "Ed25519 Public Key (for storage proofs)"
+- Desktop app: Status tab → "Ed25519 Public Key"
+
+**When to use it:**
+- Automatically used by the node for storage proofs
+- No manual intervention required
+
+### Key Summary
+
+| Key Type | Size | Purpose | Where to Use |
+|----------|------|---------|-------------|
+| **secp256k1** | 33 bytes | Contract registration | Dashboard/Desktop registration |
+| **Ed25519** | 44 bytes | Storage proofs | Auto-managed by node |
+
+**Important:** When registering your node on-chain, always use the **secp256k1 public key** (33 bytes), not the Ed25519 key.
 
 ## Quick Start
 
@@ -53,10 +110,13 @@ MAX_STORAGE_GB=100
 SHARD_COUNT=1024
 NODE_SHARDS=[{"start":0,"end":1023}]  # Range of shards this node is responsible for
 
-# Contract Configuration
-OWNER_ADDRESS=0x...
-VAULT_REGISTRY_ADDRESS=0x...
-RPC_URL=https://...
+# Contract Configuration (optional)
+REGISTER_ON_CHAIN=false              # Set to true to auto-register on startup
+PRIVATE_KEY=0x...                    # Required if REGISTER_ON_CHAIN=true
+OWNER_ADDRESS=0x...                  # Your wallet address
+VAULT_REGISTRY_ADDRESS=0x...         # Vault registry contract
+HASHD_TOKEN_ADDRESS=0x...            # HASHD token contract
+RPC_URL=http://127.0.0.1:8545        # Ethereum RPC endpoint
 ```
 
 ## Environment Variables
@@ -92,9 +152,12 @@ RPC_URL=https://...
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OWNER_ADDRESS` | (required) | Node owner wallet address |
-| `VAULT_REGISTRY_ADDRESS` | (required) | Vault registry contract |
-| `RPC_URL` | (required) | Ethereum RPC endpoint |
+| `REGISTER_ON_CHAIN` | `false` | Auto-register/deregister on startup |
+| `PRIVATE_KEY` | (optional) | Wallet private key for auto-registration |
+| `OWNER_ADDRESS` | (optional) | Node owner wallet address |
+| `VAULT_REGISTRY_ADDRESS` | (optional) | Vault registry contract |
+| `HASHD_TOKEN_ADDRESS` | (optional) | HASHD token contract |
+| `RPC_URL` | `http://127.0.0.1:8545` | Ethereum RPC endpoint |
 
 ## API Reference
 
@@ -437,11 +500,58 @@ yarn test:coverage
 
 MIT
 
+## Contract Integration
+
+### Auto-Registration
+
+When `REGISTER_ON_CHAIN=true`, the node will automatically:
+- Register itself on-chain on startup
+- Stake 1000 HASHD tokens
+- Use the configured wallet's private key
+
+**Requirements:**
+- `PRIVATE_KEY` - Wallet private key
+- `VAULT_REGISTRY_ADDRESS` - Registry contract address
+- `HASHD_TOKEN_ADDRESS` - HASHD token address
+- `RPC_URL` - Ethereum RPC endpoint
+- Sufficient HASHD balance (1000+ HASHD)
+
+### Auto-Deregistration
+
+When `REGISTER_ON_CHAIN=false` and node is already registered:
+- Node will automatically deregister on startup
+- Staked HASHD tokens are returned to wallet
+- **All stored blobs and metadata are automatically deleted**
+- Node continues running without on-chain registration
+
+**Use case:** Testing or running nodes without blockchain integration
+
+### Deregistration Cleanup
+
+**Important:** Only registered nodes can store blobs. When a node is deregistered, all data is automatically cleaned up.
+
+**Automatic cleanup triggers:**
+1. **On deregistration** - When node is deregistered while running
+2. **On startup** - If node has blobs but is not registered on-chain
+3. **Health checks** - Periodic verification ensures unregistered nodes don't retain data
+
+**What gets deleted:**
+- All blob files (`~/.bytecave/*/blobs/*.enc`)
+- All metadata files (`~/.bytecave/*/meta/*.json`)
+- All proof files (`~/.bytecave/*/proofs/*`)
+
+**Why:** Unregistered nodes cannot participate in the storage network. Cleanup ensures:
+- No orphaned data on unregistered nodes
+- Storage integrity across the network
+- Proper resource management
+
+**Note:** The node continues running after cleanup but with empty storage. Re-register to resume storing blobs.
+
 ## Related Packages
 
 - **bytecave-relay** - Relay node for NAT traversal
 - **bytecave-browser** - Browser client library
-- **bytenode* - Desktop application
+- **bytecave-desktop** - Desktop application
 
 ## Support
 

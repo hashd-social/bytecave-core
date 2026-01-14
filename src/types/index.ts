@@ -88,6 +88,7 @@ export interface HealthResponse {
   peerId?: string;
   multiaddrs?: string[];
   publicKey?: string;
+  secp256k1PublicKey?: string;
   ownerAddress?: string;
   registeredOnChain?: boolean; // Whether node is registered in VaultNodesRegistry
   onChainNodeId?: string; // On-chain node ID if registered

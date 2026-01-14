@@ -58,6 +58,7 @@ class P2PService extends EventEmitter {
   private knownPeers: Map<string, P2PPeerInfo> = new Map();
   private announceTimer: NodeJS.Timeout | null = null;
   private started = false;
+  private secp256k1PublicKey: string | null = null;
 
   /**
    * Load or generate persistent libp2p private key
@@ -326,17 +327,24 @@ async start(): Promise<void> {
 
       // Handle auto-registration after P2P is started and we have a peer ID
       // Extract the raw secp256k1 public key for registration
+      logger.info('[P2P] Attempting to extract secp256k1 public key from peer ID');
       const publicKeyProto = (this.node.peerId.publicKey as any).raw;
       const protoBuffer = Buffer.from(publicKeyProto);
+      logger.info(`[P2P] Raw public key buffer length: ${protoBuffer.length} bytes`);
+      logger.info(`[P2P] Raw public key hex: 0x${protoBuffer.toString('hex')}`);
       
       let keyBytes: Buffer | undefined;
       if (protoBuffer.length === 33) {
+        logger.info('[P2P] Buffer is exactly 33 bytes - using as-is');
         keyBytes = protoBuffer;
       } else if (protoBuffer.length === 36) {
+        logger.info('[P2P] Buffer is 36 bytes - extracting last 33 bytes');
         keyBytes = protoBuffer.slice(3);
       } else {
+        logger.info(`[P2P] Buffer is ${protoBuffer.length} bytes - searching for 0x02/0x03 prefix`);
         for (let i = 0; i < protoBuffer.length - 33; i++) {
           if (protoBuffer[i] === 0x02 || protoBuffer[i] === 0x03) {
+            logger.info(`[P2P] Found compressed key prefix at offset ${i}`);
             keyBytes = protoBuffer.slice(i, i + 33);
             break;
           }
@@ -345,6 +353,30 @@ async start(): Promise<void> {
       
       if (keyBytes) {
         const publicKeyHex = '0x' + keyBytes.toString('hex');
+        this.secp256k1PublicKey = publicKeyHex; // Store for later access
+        
+        // Log key information for user clarity
+        logger.info('='.repeat(80));
+        logger.info('NODE CRYPTOGRAPHIC KEYS');
+        logger.info('='.repeat(80));
+        logger.info('');
+        logger.info('📋 Peer ID (libp2p identity):');
+        logger.info(`   ${peerId}`);
+        logger.info('');
+        logger.info('🔑 secp256k1 Public Key (for contract registration):');
+        logger.info(`   ${publicKeyHex}`);
+        logger.info(`   Length: ${keyBytes.length} bytes (compressed)`);
+        logger.info(`   Use this key when registering your node on-chain`);
+        logger.info('');
+        logger.info('🔐 Ed25519 Public Key (for storage proofs):');
+        logger.info(`   Available via /health endpoint (publicKey field)`);
+        logger.info(`   Used for signing storage proofs and libp2p identity`);
+        logger.info('');
+        logger.info('ℹ️  Key Usage Summary:');
+        logger.info(`   • Contract Registration: Use secp256k1 key (${keyBytes.length} bytes)`);
+        logger.info(`   • Storage Proofs: Ed25519 key (auto-managed)`);
+        logger.info(`   • P2P Identity: Peer ID derived from keys`);
+        logger.info('='.repeat(80));
         
         // Import and call auto-registration service
         const { autoRegisterService } = await import('./auto-register.service.js');
@@ -748,6 +780,13 @@ async start(): Promise<void> {
    */
   getKnownPeerIds(): string[] {
     return Array.from(this.knownPeers.keys());
+  }
+
+  /**
+   * Get the secp256k1 public key (for contract registration)
+   */
+  getSecp256k1PublicKey(): string | null {
+    return this.secp256k1PublicKey;
   }
 
   /**

@@ -318,6 +318,9 @@ async function initializeP2P(): Promise<void> {
     logger.info(`P2P node started: ${peerId}`);
     logger.info(`P2P addresses: ${addrs.join(', ')}`);
 
+    // Check if node was deregistered and trigger cleanup if needed
+    await checkDeregistrationOnStartup(peerId);
+
     // Wait for peers to connect, then replicate existing blobs
     setTimeout(async () => {
       try {
@@ -331,6 +334,51 @@ async function initializeP2P(): Promise<void> {
     logger.error('Failed to start P2P service', error);
     // Don't fail startup - P2P is optional, HTTP still works
     logger.warn('Continuing without P2P discovery');
+  }
+}
+
+/**
+ * Check if node was deregistered and trigger cleanup
+ */
+async function checkDeregistrationOnStartup(peerId: string | null): Promise<void> {
+  if (!peerId) {
+    logger.debug('No peer ID available for deregistration check');
+    return;
+  }
+
+  try {
+    // Check if contract integration is initialized
+    if (!contractIntegrationService.isInitialized()) {
+      logger.debug('Contract integration not initialized, skipping deregistration check');
+      return;
+    }
+
+    // Check if node is registered on-chain
+    const nodeId = await contractIntegrationService.getNodeByPeerId(peerId);
+    
+    if (!nodeId) {
+      // Node is not registered on-chain
+      // Check if we have any stored blobs - if yes, this means node was deregistered
+      const stats = await storageService.getStats();
+      
+      if (stats.blobCount > 0) {
+        logger.warn('='.repeat(60));
+        logger.warn('DEREGISTRATION DETECTED ON STARTUP');
+        logger.warn(`Node has ${stats.blobCount} blobs but is not registered on-chain`);
+        logger.warn('Triggering cleanup of all stored data');
+        logger.warn('='.repeat(60));
+        
+        // Import and trigger cleanup
+        const { performDeregistrationCleanup } = await import('./utils/deregistration-cleanup.js');
+        await performDeregistrationCleanup();
+      } else {
+        logger.info('Node is not registered on-chain (no blobs stored, no cleanup needed)');
+      }
+    } else {
+      logger.info('Node is registered on-chain', { nodeId: nodeId.slice(0, 16) + '...' });
+    }
+  } catch (error: any) {
+    logger.warn('Failed to check deregistration status on startup', { error: error.message });
   }
 }
 

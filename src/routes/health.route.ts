@@ -186,7 +186,15 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
           
           // Detect deregistration and trigger cleanup
           if (wasRegisteredOnChain && !registeredOnChain) {
-            logger.warn('Node deregistration detected - triggering cleanup');
+            logger.warn('Node deregistration detected (was registered, now not) - triggering cleanup');
+            // Trigger cleanup asynchronously (don't block health response)
+            performDeregistrationCleanup().catch(err => 
+              logger.error('Failed to perform deregistration cleanup', err)
+            );
+          }
+          // Also check if node has blobs but is not registered (handles restart case)
+          else if (!registeredOnChain && stats.blobCount > 0) {
+            logger.warn('Node has blobs but is not registered on-chain - triggering cleanup');
             // Trigger cleanup asynchronously (don't block health response)
             performDeregistrationCleanup().catch(err => 
               logger.error('Failed to perform deregistration cleanup', err)
@@ -240,6 +248,7 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       peerId: p2pService.isStarted() ? (p2pService.getPeerId() ?? undefined) : undefined,
       multiaddrs,
       publicKey,
+      secp256k1PublicKey: p2pService.isStarted() ? (p2pService.getSecp256k1PublicKey() ?? undefined) : undefined,
       ownerAddress: process.env.OWNER_ADDRESS || undefined,
       registeredOnChain,
       onChainNodeId,

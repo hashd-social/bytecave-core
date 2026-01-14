@@ -6,6 +6,7 @@
 import { ethers } from 'ethers';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
+import { contractIntegrationService } from './contract-integration.service.js';
 
 export class AutoRegisterService {
   private static instance: AutoRegisterService;
@@ -61,14 +62,30 @@ export class AutoRegisterService {
     logger.warn('⚠️  This will stake 1000 HASHD tokens from the configured wallet');
 
     try {
-      // Connect to blockchain
+      // Initialize contract integration service if not already done
+      if (!contractIntegrationService.isInitialized()) {
+        await contractIntegrationService.initialize({
+          rpcUrl: config.rpcUrl,
+          privateKey: config.privateKey,
+          registryAddress: config.registryAddress,
+          incentivesAddress: process.env.VAULT_INCENTIVES_ADDRESS
+        });
+      }
+
+      const signerAddress = await contractIntegrationService.getSignerAddress();
+      if (!signerAddress) {
+        logger.error('No signer configured for auto-registration');
+        return;
+      }
+
+      logger.info(`Wallet address: ${signerAddress}`);
+
+      // Connect to blockchain for token operations
       const provider = new ethers.JsonRpcProvider(config.rpcUrl, undefined, {
         staticNetwork: true,
         batchMaxCount: 1
       });
       const wallet = new ethers.Wallet(config.privateKey, provider);
-
-      logger.info(`Wallet address: ${wallet.address}`);
 
       // Get HASHD token contract
       const hashdAbi = [
@@ -89,27 +106,14 @@ export class AutoRegisterService {
 
       logger.info(`HASHD balance: ${ethers.formatEther(balance)} HASHD`);
 
-      // Get registry contract
-      const registryAbi = [
-        'function registerNode(bytes publicKey, string peerId, bytes32 metadataHash, uint256 stakeAmount, bytes signature) returns (bytes32)',
-        'function getNodeByOwner(address owner) view returns (bytes32)',
-        'function getNode(bytes32 nodeId) view returns (tuple(address owner, bytes publicKey, string peerId, bytes32 metadataHash, uint256 stakedAmount, uint256 registeredAt, bool active))'
-      ];
-      const registry = new ethers.Contract(config.registryAddress, registryAbi, wallet);
-
-      // Check if already registered
-      try {
-        const existingNodeId = await registry.getNodeByOwner(wallet.address);
-        if (existingNodeId !== ethers.ZeroHash) {
-          const nodeInfo = await registry.getNode(existingNodeId);
-          if (nodeInfo.active) {
-            logger.info(`✅ Node already registered on-chain (nodeId: ${existingNodeId.slice(0, 16)}...)`);
-            return;
-          }
+      // Check if already registered using contract integration service
+      const existingNodeId = await contractIntegrationService.getNodeByOwner(wallet.address);
+      if (existingNodeId) {
+        const nodeInfo = await contractIntegrationService.getNode(existingNodeId);
+        if (nodeInfo && nodeInfo.active) {
+          logger.info(`✅ Node already registered on-chain (nodeId: ${existingNodeId.slice(0, 16)}...)`);
+          return;
         }
-      } catch (error: any) {
-        // Node not registered yet - this is expected, continue with registration
-        logger.info('Node not yet registered, proceeding with registration...');
       }
 
       // Approve tokens if needed
@@ -132,33 +136,25 @@ export class AutoRegisterService {
       };
       const metadataHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(metadata)));
 
-      // Empty signature (not enforced yet)
-      const emptySignature = '0x';
-
-      // Get fresh nonce
-      const nonce = await provider.getTransactionCount(wallet.address, 'latest');
-
       logger.info('Submitting registration transaction...', {
         peerId: peerId.slice(0, 16) + '...',
         publicKey: publicKeyHex.slice(0, 16) + '...',
-        stakeAmount: '1000 HASHD',
-        nonce
+        stakeAmount: '1000 HASHD'
       });
 
-      // Register node
-      const tx = await registry.registerNode(
+      // Register node using contract integration service
+      const nodeId = await contractIntegrationService.registerNode(
         publicKeyHex,
         peerId,
-        metadataHash,
-        stakeAmount,
-        emptySignature,
-        { nonce }
+        metadataHash
       );
 
-      logger.info(`Transaction sent: ${tx.hash}`);
-      const receipt = await tx.wait();
-      logger.info(`✅ Node registered successfully! (tx: ${receipt.hash})`);
-      logger.info(`   Staked: 1000 HASHD tokens`);
+      if (nodeId) {
+        logger.info(`✅ Node registered successfully! (nodeId: ${nodeId.slice(0, 16)}...)`);
+        logger.info(`   Staked: 1000 HASHD tokens`);
+      } else {
+        logger.error('Registration failed: no nodeId returned');
+      }
 
     } catch (error: any) {
       logger.error('Auto-registration failed:', error.message);
@@ -176,46 +172,48 @@ export class AutoRegisterService {
     logger.info('⚠️  This will return staked HASHD tokens to the wallet');
 
     try {
-      // Connect to blockchain
-      const provider = new ethers.JsonRpcProvider(config.rpcUrl, undefined, {
-        staticNetwork: true,
-        batchMaxCount: 1
-      });
-      const wallet = new ethers.Wallet(config.privateKey, provider);
+      // Initialize contract integration service if not already done
+      if (!contractIntegrationService.isInitialized()) {
+        await contractIntegrationService.initialize({
+          rpcUrl: config.rpcUrl,
+          privateKey: config.privateKey,
+          registryAddress: config.registryAddress,
+          incentivesAddress: process.env.VAULT_INCENTIVES_ADDRESS
+        });
+      }
 
-      logger.info(`Wallet address: ${wallet.address}`);
+      const signerAddress = await contractIntegrationService.getSignerAddress();
+      if (!signerAddress) {
+        logger.error('No signer configured for auto-deregistration');
+        return;
+      }
 
-      // Get registry contract
-      const registryAbi = [
-        'function deregisterNode() returns (bool)',
-        'function getNodeByOwner(address owner) view returns (bytes32)',
-        'function getNode(bytes32 nodeId) view returns (tuple(address owner, bytes publicKey, string peerId, bytes32 metadataHash, uint256 stakedAmount, uint256 registeredAt, bool active))'
-      ];
-      const registry = new ethers.Contract(config.registryAddress, registryAbi, wallet);
+      logger.info(`Wallet address: ${signerAddress}`);
 
-      // Check if registered
-      const nodeId = await registry.getNodeByOwner(wallet.address);
-      if (nodeId === ethers.ZeroHash) {
+      // Check if registered using contract integration service
+      const nodeId = await contractIntegrationService.getNodeByOwner(signerAddress);
+      if (!nodeId) {
         logger.info('Node is not registered on-chain (nothing to deregister)');
         return;
       }
 
-      const nodeInfo = await registry.getNode(nodeId);
-      if (!nodeInfo.active) {
+      const nodeInfo = await contractIntegrationService.getNode(nodeId);
+      if (!nodeInfo || !nodeInfo.active) {
         logger.info('Node is already deregistered');
         return;
       }
 
       logger.info(`Deregistering node (nodeId: ${nodeId.slice(0, 16)}...)`);
-      logger.info(`Will return ${ethers.formatEther(nodeInfo.stakedAmount)} HASHD tokens`);
 
-      // Deregister
-      const tx = await registry.deregisterNode();
-      logger.info(`Transaction sent: ${tx.hash}`);
-      
-      const receipt = await tx.wait();
-      logger.info(`✅ Node deregistered successfully! (tx: ${receipt.hash})`);
-      logger.info(`   Returned: ${ethers.formatEther(nodeInfo.stakedAmount)} HASHD tokens`);
+      // Deregister using contract integration service (unregisterNode doesn't take nodeId)
+      const success = await contractIntegrationService.unregisterNode();
+
+      if (success) {
+        logger.info(`✅ Node deregistered successfully!`);
+        logger.info(`   Staked tokens returned to wallet`);
+      } else {
+        logger.error('Deregistration failed');
+      }
 
     } catch (error: any) {
       logger.error('Auto-deregistration failed:', error.message);

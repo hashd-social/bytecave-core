@@ -13,6 +13,7 @@ import type { Stream, Connection } from '@libp2p/interface';
 import { logger } from '../utils/logger.js';
 import { storageService } from './storage.service.js';
 import { metricsService } from './metrics.service.js';
+import { p2pService } from './p2p.service.js';
 import { config } from '../config/index.js';
 
 // Protocol identifiers
@@ -66,6 +67,7 @@ export interface P2PHealthResponse {
   multiaddrs: string[];
   nodeId?: string;
   publicKey?: string;
+  secp256k1PublicKey?: string;
   ownerAddress?: string;
   registeredOnChain?: boolean;
   onChainNodeId?: string;
@@ -87,6 +89,7 @@ export interface P2PHealthResponse {
 export interface P2PInfoResponse {
   peerId: string;
   publicKey: string;
+  secp256k1PublicKey?: string;
   ownerAddress?: string;
   version: string;
 }
@@ -669,6 +672,7 @@ class P2PProtocolsService {
         multiaddrs,
         nodeId: config.nodeId,
         publicKey,
+        secp256k1PublicKey: p2pService.getSecp256k1PublicKey() || undefined,
         ownerAddress: config.ownerAddress,
         registeredOnChain,
         onChainNodeId,
@@ -714,6 +718,7 @@ class P2PProtocolsService {
       const response: P2PInfoResponse = {
         peerId: this.node?.peerId.toString() || '',
         publicKey: config.publicKey || '',
+        secp256k1PublicKey: p2pService.getSecp256k1PublicKey() || undefined,
         ownerAddress: config.ownerAddress,
         version: '1.0.0'
       };
