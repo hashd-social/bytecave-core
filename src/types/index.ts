@@ -19,6 +19,7 @@ export interface BlobMetadata {
   // Additional metadata for queries
   metadata?: Record<string, any>; // Flexible metadata for application use
   replication?: {
+    source?: 'local' | 'replicated'; // Track if blob was stored locally or received via replication
     fromPeer?: string;
     replicatedAt?: number;
     replicatedTo?: string[];
@@ -70,23 +71,26 @@ export interface ReplicateResponse {
 }
 
 export interface HealthResponse {
-  status: 'healthy' | 'degraded' | 'unhealthy';
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'outdated';
   uptime: number;
   storedBlobs: number;
   totalSize: number;
   latencyMs: number;
   version: string;
+  minVersion?: string; // Minimum required version from contract (shown when outdated)
   nodeId?: string; // Node identifier for display (e.g., "bat-alpha")
   peers: number; // Legacy: replication peers count
   p2p: {
     connected: number;    // Total P2P connections
-    replicating: number;  // Peers available for replication
+    registered: number;   // Active registered nodes from contract
     relay: number;        // Connections via relay
   };
   peerId?: string;
   multiaddrs?: string[];
   publicKey?: string;
   ownerAddress?: string;
+  registeredOnChain?: boolean; // Whether node is registered in VaultNodesRegistry
+  onChainNodeId?: string; // On-chain node ID if registered
   lastReplication: number;
   metrics: {
     requestsLastHour: number;
@@ -153,6 +157,10 @@ export interface Config {
   // Contract integration
   rpcUrl: string;
   registryAddress: string;
+  // Auto-registration
+  autoRegisterOnChain?: boolean; // undefined = skip, true = register, false = deregister
+  privateKey: string;
+  hashdTokenAddress: string;
   // P2P Configuration
   p2pEnabled: boolean;
   p2pListenAddresses: string[];

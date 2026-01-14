@@ -12,11 +12,16 @@ import { replicationService } from '../services/replication.service.js';
 import { metricsService } from '../services/metrics.service.js';
 import { p2pService } from '../services/p2p.service.js';
 import { proofService } from '../services/proof.service.js';
+import { versionCheckService } from '../services/version-check.service.js';
 import { logger } from '../utils/logger.js';
 import { verifyCID, verifyMetadataIntegrity } from '../utils/cid.js';
+import { performDeregistrationCleanup } from '../utils/deregistration-cleanup.js';
 import { HealthResponse, BlobMetadata } from '../types/index.js';
 
 const VERSION = '1.0.0';
+
+// Track registration state to detect deregistration
+let wasRegisteredOnChain = false;
 
 interface IntegrityCheck {
   checked: number;
@@ -137,11 +142,18 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
     // Run integrity check on stored blobs
     const integrityCheck = await checkBlobIntegrity();
 
-    // Determine health status
-    let status: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
+    // Check version status
+    const versionStatus = versionCheckService.getVersionStatus();
     
+    // Determine health status
+    let status: 'healthy' | 'degraded' | 'unhealthy' | 'outdated' = 'healthy';
+    
+    // Outdated takes precedence - any version mismatch shows as outdated
+    if (versionStatus.outdated || versionStatus.outdatedWarning) {
+      status = 'outdated';
+    }
     // Unhealthy if integrity check fails, orphaned files, or metadata tampered
-    if (integrityCheck.failed > 0 || integrityCheck.orphaned > 0 || integrityCheck.metadataTampered > 0) {
+    else if (integrityCheck.failed > 0 || integrityCheck.orphaned > 0 || integrityCheck.metadataTampered > 0) {
       status = 'unhealthy';
     }
     // Degraded if success rate is below 90%
@@ -150,16 +162,43 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
     }
     
     // Unhealthy only if success rate is critically low
-    if (successRate < 0.5) {
+    if (successRate < 0.5 && status !== 'outdated') {
       status = 'unhealthy';
     }
 
     // Get public key for contract registration
     let publicKey: string | undefined;
+    let registeredOnChain = false;
+    let onChainNodeId: string | undefined;
     try {
       publicKey = proofService.getPublicKey();
+      
+      // Check if node is registered on-chain by peer ID (most accurate)
+      const peerId = p2pService.isStarted() ? p2pService.getPeerId() : null;
+      if (peerId) {
+        const { contractIntegrationService } = await import('../services/contract-integration.service.js');
+        if (contractIntegrationService.isInitialized()) {
+          const nodeId = await contractIntegrationService.getNodeByPeerId(peerId);
+          if (nodeId) {
+            registeredOnChain = true;
+            onChainNodeId = nodeId;
+          }
+          
+          // Detect deregistration and trigger cleanup
+          if (wasRegisteredOnChain && !registeredOnChain) {
+            logger.warn('Node deregistration detected - triggering cleanup');
+            // Trigger cleanup asynchronously (don't block health response)
+            performDeregistrationCleanup().catch(err => 
+              logger.error('Failed to perform deregistration cleanup', err)
+            );
+          }
+          
+          // Update registration state
+          wasRegisteredOnChain = registeredOnChain;
+        }
+      }
     } catch {
-      // Keys not initialized yet
+      // Keys not initialized yet or registration check failed
     }
 
     // Get multiaddrs for P2P connectivity
@@ -168,8 +207,20 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       multiaddrs = p2pService.getMultiaddrs();
     }
 
-    // Get P2P connection details
+    // Get P2P connection details - actual connected peers
     const connectedPeers = p2pService.isStarted() ? p2pService.getConnectedPeers().length : 0;
+    
+    // Get registered node count from contract - this is the true replicating count
+    let registeredNodeCount = 0;
+    try {
+      const { contractIntegrationService } = await import('../services/contract-integration.service.js');
+      if (contractIntegrationService.isInitialized()) {
+        const nodeCount = await contractIntegrationService.getNodeCount();
+        registeredNodeCount = nodeCount.active;
+      }
+    } catch (error) {
+      logger.debug('Failed to get node count from contract', error);
+    }
 
     const response: HealthResponse = {
       status,
@@ -178,17 +229,20 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       totalSize: stats.totalSize,
       latencyMs: metrics.avgLatency,
       version: VERSION,
+      minVersion: status === 'outdated' ? versionStatus.minimum ?? undefined : undefined,
       nodeId: config.nodeId, // Add node ID for display in dashboard
       peers: peerCount, // Legacy: replication peers for backward compatibility
       p2p: {
-        connected: connectedPeers,      // Total P2P connections
-        replicating: peerCount,         // Peers available for replication
-        relay: 0                        // TODO: Track relay connections
+        connected: connectedPeers,        // Total P2P connections
+        registered: registeredNodeCount,  // Active registered nodes from contract
+        relay: 0                          // TODO: Track relay connections
       },
       peerId: p2pService.isStarted() ? (p2pService.getPeerId() ?? undefined) : undefined,
       multiaddrs,
       publicKey,
       ownerAddress: process.env.OWNER_ADDRESS || undefined,
+      registeredOnChain,
+      onChainNodeId,
       lastReplication: 0, // TODO: Track last replication time
       metrics: {
         requestsLastHour: metrics.requestsLastHour,

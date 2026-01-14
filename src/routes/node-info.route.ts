@@ -44,8 +44,8 @@ export async function nodeInfoHandler(_req: Request, res: Response): Promise<voi
     const stats = await storageService.getStats();
     const nodeScore = 500; // Default score - could be enhanced with actual reputation data
 
-    // Calculate uptime
-    const uptime = process.uptime() * 1000; // milliseconds
+    // Calculate uptime in seconds (consistent with health endpoint)
+    const uptime = Math.floor(process.uptime()); // seconds
 
     // Get shard participation from environment
     const shardsEnv = process.env.SHARDS || '';

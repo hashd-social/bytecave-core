@@ -17,8 +17,11 @@ import { proofService } from './services/proof.service.js';
 import { reputationService } from './services/reputation.service.js';
 import { gcService } from './services/gc.service.js';
 import { feedService } from './services/feed.service.js';
+import { appRegistryCleanupService } from './services/app-registry-cleanup.service.js';
+import { versionCheckService } from './services/version-check.service.js';
 import { requestLogger } from './middleware/logging.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
+import { requireUpToDateVersion } from './middleware/version-check.middleware.js';
 import { storeHandler } from './routes/store.route.js';
 import { blobHandler } from './routes/blob.route.js';
 // REMOVED: replicate.route.js - insecure HTTP endpoint that bypassed authorization
@@ -140,7 +143,7 @@ app.disable('x-powered-by');
 
 // Storage endpoints with shard validation (R7.5)
 // Only /store is allowed - requires on-chain authorization with appId validation
-app.post('/store', storageLimiter, validateShardAssignment, storeHandler);
+app.post('/store', storageLimiter, requireUpToDateVersion, validateShardAssignment, storeHandler);
 // REMOVED: /replicate endpoint - was insecure, allowed bypassing authorization
 // Replication now only via P2P protocols (/bytecave/replicate/1.0.0) with peer verification
 
@@ -267,6 +270,22 @@ async function initialize(): Promise<void> {
     await reputationService.initialize();
     await gcService.initialize();
     await feedService.initialize();
+    await versionCheckService.start();
+    
+    // Initialize app registry cleanup service
+    await appRegistryCleanupService.initialize();
+    
+    // Check for unauthorized blobs on startup
+    await appRegistryCleanupService.checkAndCleanup();
+    
+    // Schedule periodic cleanup checks (every 5 minutes)
+    setInterval(async () => {
+      try {
+        await appRegistryCleanupService.checkAndCleanup();
+      } catch (error: any) {
+        logger.error('Failed to check app registry cleanup', { error: error.message });
+      }
+    }, 5 * 60 * 1000);
 
     // Initialize P2P service
     await initializeP2P();

@@ -6,7 +6,7 @@
  */
 
 import { config } from '../config/index.js';
-import { REPLICATION_FACTOR } from '../constants/replication.js';
+import { getReplicationFactor, updateReplicationFactor } from '../constants/replication.js';
 import { logger } from '../utils/logger.js';
 import { Peer } from '../types/index.js';
 import { contractIntegrationService } from './contract-integration.service.js';
@@ -14,10 +14,40 @@ import { storageService } from './storage.service.js';
 import { replicationManager } from './replication-manager.service.js';
 import { p2pProtocolsService } from './p2p-protocols.service.js';
 import { p2pService } from './p2p.service.js';
+import { versionCheckService } from './version-check.service.js';
+
+interface RetryQueueItem {
+  cid: string;
+  ciphertext: Buffer;
+  mimeType: string;
+  options?: {
+    appId?: string;
+    contentType?: string;
+    sender?: string;
+    timestamp?: number;
+    guildId?: string;
+    metadata?: Record<string, any>;
+  };
+  targetPeerId: string;
+  attempts: number;
+  nextRetryAt: number;
+}
 
 export class ReplicationService {
   private peers: Peer[] = [];
   private refreshInterval: NodeJS.Timeout | null = null;
+  private retryQueue: Map<string, RetryQueueItem> = new Map();
+  // @ts-ignore - Used in startPeerRefresh() setInterval
+  private retryInterval: NodeJS.Timeout | null = null;
+  private healthCheckInterval: NodeJS.Timeout | null = null;
+  private readonly MAX_RETRY_ATTEMPTS = 3;
+  private readonly BASE_RETRY_DELAY_MS = 5000; // 5 seconds
+  private readonly HEALTH_CHECK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+  
+  // Rate limiting
+  private replicationInProgress: Set<string> = new Set(); // Track CIDs being replicated
+  private readonly MAX_CONCURRENT_REPLICATIONS = 5; // Max concurrent replication operations
+  private replicationQueue: Array<() => Promise<void>> = []; // Queue for rate-limited operations
 
   /**
    * Initialize replication service
@@ -30,13 +60,34 @@ export class ReplicationService {
 
     logger.info('Initializing replication service');
     
+    // Fetch replication factor from contract
+    await this.updateReplicationFactorFromContract();
+    
     // Start periodic peer refresh
     this.startPeerRefresh();
 
     // Load peers from on-chain registry
     await this.loadPeersFromRegistry();
 
+    // Start periodic replication health check
+    this.startReplicationHealthCheck();
+
     logger.info('Replication service initialized');
+  }
+
+  /**
+   * Fetch and cache replication factor from contract
+   */
+  private async updateReplicationFactorFromContract(): Promise<void> {
+    try {
+      if (contractIntegrationService.isInitialized()) {
+        const factor = await contractIntegrationService.getReplicationFactor();
+        updateReplicationFactor(factor);
+        logger.info('Replication factor updated from contract', { factor });
+      }
+    } catch (error) {
+      logger.warn('Failed to fetch replication factor from contract, using default', error);
+    }
   }
 
   /**
@@ -46,6 +97,25 @@ export class ReplicationService {
   async replicateExistingBlobs(): Promise<void> {
     if (!config.replicationEnabled) {
       return;
+    }
+
+    // Skip replication if node is outdated (major version mismatch only)
+    const versionStatus = versionCheckService.getVersionStatus();
+    logger.info('[REPLICATION] Version check', {
+      current: versionStatus.current,
+      minimum: versionStatus.minimum,
+      outdated: versionStatus.outdated,
+      outdatedWarning: versionStatus.outdatedWarning,
+      isNodeOutdated: versionCheckService.isNodeOutdated()
+    });
+    
+    if (versionCheckService.isNodeOutdated()) {
+      logger.warn('Skipping replication - node has MAJOR version mismatch (blocking)');
+      return;
+    }
+    
+    if (versionStatus.outdatedWarning) {
+      logger.warn('Node has minor/patch version mismatch - continuing replication with warning');
     }
 
     try {
@@ -59,22 +129,47 @@ export class ReplicationService {
         return;
       }
 
-      logger.info('[REPLICATION] Found existing blobs to replicate', { count: blobs.length });
+      logger.info('[REPLICATION] Found existing blobs', { count: blobs.length });
 
-      // Replicate each blob
-      for (const blob of blobs) {
+      // Filter to only replicate blobs that were stored locally (not received via replication)
+      const localBlobs = blobs.filter(blob => {
+        const source = blob.replication?.source;
+        return source === 'local' || source === undefined; // undefined for legacy blobs
+      });
+
+      logger.info('[REPLICATION] Filtered to local blobs only', { 
+        total: blobs.length,
+        local: localBlobs.length,
+        replicated: blobs.length - localBlobs.length
+      });
+
+      if (localBlobs.length === 0) {
+        logger.info('[REPLICATION] No local blobs to replicate');
+        return;
+      }
+
+      // Replicate each local blob
+      for (const blob of localBlobs) {
         try {
           const blobData = await storageService.getBlob(blob.cid);
           
-          logger.info('[REPLICATION] Replicating existing blob', { 
+          logger.info('[REPLICATION] Replicating local blob', { 
             cid: blob.cid,
-            size: blobData.ciphertext.length 
+            size: blobData.ciphertext.length,
+            appId: blob.appId,
+            replicationSource: blob.replication?.source || 'legacy'
           });
 
           await this.replicateToAll(
             blob.cid,
             blobData.ciphertext,
-            blob.mimeType
+            blob.mimeType,
+            {
+              appId: blob.appId,
+              contentType: blob.contentType,
+              sender: blob.sender,
+              timestamp: blob.timestamp
+            }
           );
         } catch (error: any) {
           logger.warn('[REPLICATION] Failed to replicate existing blob', { 
@@ -95,45 +190,364 @@ export class ReplicationService {
   }
 
   /**
-   * Start periodic peer refresh
+   * Start periodic peer refresh and retry processing
    */
   private startPeerRefresh(): void {
-    // Refresh peers periodically (every 60 seconds)
+    // Refresh peers and replication factor periodically (every 60 seconds)
     this.refreshInterval = setInterval(() => {
+      this.updateReplicationFactorFromContract().catch((err: Error) =>
+        logger.error('Failed to refresh replication factor', err)
+      );
       this.loadPeersFromRegistry().catch((err: Error) => 
-        logger.warn('Failed to refresh peers from registry', { error: err.message })
+        logger.error('Failed to refresh peers', err)
       );
     }, 60000);
+
+    // Process retry queue periodically (every 10 seconds)
+    this.retryInterval = setInterval(() => {
+      this.processRetryQueue().catch((err: Error) =>
+        logger.warn('Failed to process retry queue', { error: err.message })
+      );
+    }, 10000);
 
     logger.info('Replication service initialized');
   }
 
   /**
-   * Replicate blob to all peers
+   * Start periodic replication health check
+   * Detects under-replicated blobs and triggers re-replication
+   */
+  private startReplicationHealthCheck(): void {
+    // Run health check periodically (every 10 minutes)
+    this.healthCheckInterval = setInterval(() => {
+      this.checkReplicationHealth().catch((err: Error) =>
+        logger.error('Failed to check replication health', { error: err.message })
+      );
+    }, this.HEALTH_CHECK_INTERVAL_MS);
+
+    logger.info('[REPLICATION] Health check service started', {
+      intervalMinutes: this.HEALTH_CHECK_INTERVAL_MS / 60000
+    });
+  }
+
+  /**
+   * Check replication health for all local blobs
+   * Detects under-replication and triggers re-replication
+   */
+  private async checkReplicationHealth(): Promise<void> {
+    try {
+      logger.info('[REPLICATION] Starting replication health check');
+
+      // Get all blobs from storage
+      const blobs = await storageService.listBlobs();
+      
+      // Filter to only check locally-stored blobs
+      const localBlobs = blobs.filter(blob => {
+        const source = blob.replication?.source;
+        return source === 'local' || source === undefined;
+      });
+
+      if (localBlobs.length === 0) {
+        logger.info('[REPLICATION] No local blobs to health check');
+        return;
+      }
+
+      logger.info('[REPLICATION] Health checking local blobs', { count: localBlobs.length });
+
+      const replicationFactor = getReplicationFactor();
+      const connectedPeerIds = p2pService.getConnectedPeers();
+      let underReplicatedCount = 0;
+      let healthyCount = 0;
+
+      // Check each local blob's replication status
+      for (const blob of localBlobs) {
+        try {
+          // Query network for existing replicas
+          const peersWithCid = await p2pProtocolsService.queryWhoHasCid(blob.cid, connectedPeerIds);
+          const currentReplicas = peersWithCid.length + 1; // +1 for this node
+
+          if (currentReplicas < replicationFactor) {
+            underReplicatedCount++;
+            logger.warn('[REPLICATION] Under-replicated blob detected', {
+              cid: blob.cid,
+              currentReplicas,
+              replicationFactor,
+              deficit: replicationFactor - currentReplicas
+            });
+
+            // Trigger re-replication
+            const blobData = await storageService.getBlob(blob.cid);
+            await this.replicateToAll(
+              blob.cid,
+              blobData.ciphertext,
+              blob.mimeType,
+              {
+                appId: blob.appId,
+                contentType: blob.contentType,
+                sender: blob.sender,
+                timestamp: blob.timestamp
+              }
+            );
+          } else {
+            healthyCount++;
+          }
+        } catch (error: any) {
+          logger.warn('[REPLICATION] Failed to health check blob', {
+            cid: blob.cid,
+            error: error.message
+          });
+        }
+      }
+
+      logger.info('[REPLICATION] Health check complete', {
+        total: localBlobs.length,
+        healthy: healthyCount,
+        underReplicated: underReplicatedCount,
+        replicationFactor
+      });
+    } catch (error: any) {
+      logger.error('[REPLICATION] Health check failed', { error: error.message });
+    }
+  }
+
+  /**
+   * Add failed replication to retry queue with exponential backoff
+   */
+  private addToRetryQueue(
+    cid: string,
+    ciphertext: Buffer,
+    mimeType: string,
+    targetPeerId: string,
+    options?: {
+      appId?: string;
+      contentType?: string;
+      sender?: string;
+      timestamp?: number;
+      guildId?: string;
+      metadata?: Record<string, any>;
+    },
+    currentAttempts: number = 0
+  ): void {
+    const queueKey = `${cid}-${targetPeerId}`;
+    
+    // Calculate exponential backoff: 5s, 10s, 20s
+    const delay = this.BASE_RETRY_DELAY_MS * Math.pow(2, currentAttempts);
+    const nextRetryAt = Date.now() + delay;
+
+    this.retryQueue.set(queueKey, {
+      cid,
+      ciphertext,
+      mimeType,
+      options,
+      targetPeerId,
+      attempts: currentAttempts + 1,
+      nextRetryAt
+    });
+
+    logger.info('[REPLICATION] Added to retry queue', {
+      cid,
+      targetPeerId: targetPeerId.slice(0, 12),
+      attempts: currentAttempts + 1,
+      nextRetryIn: `${delay}ms`
+    });
+  }
+
+  /**
+   * Process retry queue - attempt failed replications
+   */
+  private async processRetryQueue(): Promise<void> {
+    const now = Date.now();
+    const toRetry: RetryQueueItem[] = [];
+
+    // Find items ready for retry
+    for (const [key, item] of this.retryQueue.entries()) {
+      if (item.nextRetryAt <= now) {
+        toRetry.push(item);
+        this.retryQueue.delete(key);
+      }
+    }
+
+    if (toRetry.length === 0) {
+      return;
+    }
+
+    logger.info('[REPLICATION] Processing retry queue', {
+      count: toRetry.length,
+      queueSize: this.retryQueue.size
+    });
+
+    for (const item of toRetry) {
+      try {
+        const success = await p2pProtocolsService.replicateToPeer(
+          item.targetPeerId,
+          item.cid,
+          item.ciphertext,
+          item.mimeType,
+          item.options
+        );
+
+        if (success) {
+          logger.info('[REPLICATION] Retry successful', {
+            cid: item.cid,
+            targetPeerId: item.targetPeerId.slice(0, 12),
+            attempts: item.attempts
+          });
+        } else {
+          // Retry failed, check if we should retry again
+          if (item.attempts < this.MAX_RETRY_ATTEMPTS) {
+            this.addToRetryQueue(
+              item.cid,
+              item.ciphertext,
+              item.mimeType,
+              item.targetPeerId,
+              item.options,
+              item.attempts
+            );
+          } else {
+            logger.warn('[REPLICATION] Max retry attempts reached, giving up', {
+              cid: item.cid,
+              targetPeerId: item.targetPeerId.slice(0, 12),
+              attempts: item.attempts
+            });
+          }
+        }
+      } catch (error: any) {
+        // Retry failed with error, check if we should retry again
+        if (item.attempts < this.MAX_RETRY_ATTEMPTS) {
+          this.addToRetryQueue(
+            item.cid,
+            item.ciphertext,
+            item.mimeType,
+            item.targetPeerId,
+            item.options,
+            item.attempts
+          );
+        } else {
+          logger.warn('[REPLICATION] Max retry attempts reached after error, giving up', {
+            cid: item.cid,
+            targetPeerId: item.targetPeerId.slice(0, 12),
+            attempts: item.attempts,
+            error: error.message
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Replicate blob to all peers with rate limiting
    */
   async replicateToAll(
     cid: string,
     ciphertext: Buffer,
     mimeType: string,
-    options?: { contentType?: string; guildId?: string }
+    options?: { 
+      appId?: string;
+      contentType?: string; 
+      sender?: string;
+      timestamp?: number;
+      guildId?: string;
+      metadata?: Record<string, any>;
+    }
   ): Promise<string[]> {
     if (!config.replicationEnabled) {
       return [];
     }
 
-    logger.info('[REPLICATION] Starting peer discovery', { cid });
+    // Check if this CID is already being replicated
+    if (this.replicationInProgress.has(cid)) {
+      logger.debug('[REPLICATION] Replication already in progress for CID', { cid });
+      return [];
+    }
+
+    // Check concurrent replication limit
+    if (this.replicationInProgress.size >= this.MAX_CONCURRENT_REPLICATIONS) {
+      logger.info('[REPLICATION] Max concurrent replications reached, queueing', {
+        cid,
+        inProgress: this.replicationInProgress.size,
+        queueSize: this.replicationQueue.length
+      });
+      
+      // Queue this replication for later
+      return new Promise((resolve) => {
+        this.replicationQueue.push(async () => {
+          const result = await this._replicateToAllInternal(cid, ciphertext, mimeType, options);
+          resolve(result);
+        });
+      });
+    }
+
+    return this._replicateToAllInternal(cid, ciphertext, mimeType, options);
+  }
+
+  /**
+   * Internal replication logic (called by rate-limited wrapper)
+   */
+  private async _replicateToAllInternal(
+    cid: string,
+    ciphertext: Buffer,
+    mimeType: string,
+    options?: { 
+      appId?: string;
+      contentType?: string; 
+      sender?: string;
+      timestamp?: number;
+      guildId?: string;
+      metadata?: Record<string, any>;
+    }
+  ): Promise<string[]> {
+    // Mark as in progress
+    this.replicationInProgress.add(cid);
+
+    try {
+      logger.info('[REPLICATION] Starting distributed consensus replication', { cid });
     
     // Filter out this node's own peer ID and orphaned peers (not connected)
     const myPeerId = p2pService.getPeerId();
     const connectedPeerIds = p2pService.getConnectedPeers();
+    const replicationFactor = getReplicationFactor();
+
+    // DISTRIBUTED CONSENSUS: Query network to find who already has this CID
+    logger.info('[REPLICATION] Querying network for existing replicas', { 
+      cid, 
+      connectedPeers: connectedPeerIds.length 
+    });
+    
+    const peersWithCid = await p2pProtocolsService.queryWhoHasCid(cid, connectedPeerIds);
+    
+    // Calculate current replica count (including this node)
+    const currentReplicas = peersWithCid.length + 1;
+    
+    logger.info('[REPLICATION] Replica consensus check', {
+      cid,
+      currentReplicas,
+      replicationFactor,
+      needsReplication: currentReplicas < replicationFactor,
+      peersWithCid: peersWithCid.map(p => p.slice(0, 12))
+    });
+
+    // If we already have enough replicas, skip replication
+    if (currentReplicas >= replicationFactor) {
+      logger.info('[REPLICATION] Sufficient replicas exist, skipping replication', {
+        cid,
+        currentReplicas,
+        replicationFactor
+      });
+      return [];
+    }
+
+    // Calculate how many more replicas we need
+    const replicasNeeded = replicationFactor - currentReplicas;
 
     // Use on-chain registered peers if available, filtering to only connected peers
-    // No REPLICATION_FACTOR limit - replicate to ALL connected registered peers
+    // IMPORTANT: Exclude peers that already have the CID
     let enabledPeers = this.peers
       .filter(p => p.enabled)
       .filter(p => (p as any).peerId !== myPeerId) // Filter self
       .filter(p => connectedPeerIds.includes((p as any).peerId)) // Filter orphaned peers (only connected)
-      .sort((a, b) => a.priority - b.priority);
+      .filter(p => !peersWithCid.includes((p as any).peerId)) // Filter peers that already have CID
+      .sort((a, b) => a.priority - b.priority)
+      .slice(0, replicasNeeded); // Only replicate to as many peers as needed
 
     logger.info('[REPLICATION] On-chain peers check', { 
       totalPeers: this.peers.length,
@@ -160,7 +574,10 @@ export class ReplicationService {
           peerId: (p as any).peerId
         }))
       });
-      enabledPeers = p2pPeers.slice(0, REPLICATION_FACTOR);
+      // Filter out peers that already have the CID
+      enabledPeers = p2pPeers
+        .filter(p => !peersWithCid.includes((p as any).peerId))
+        .slice(0, replicasNeeded);
     }
 
     if (enabledPeers.length === 0) {
@@ -198,10 +615,26 @@ export class ReplicationService {
       .filter(({ result }) => result.status === 'fulfilled' && result.value)
       .map(({ peer }) => peer.url);
 
+    // Add failed replications to retry queue
+    const failed = results
+      .map((result, index) => ({
+        result,
+        peer: enabledPeers[index]
+      }))
+      .filter(({ result }) => result.status === 'rejected' || (result.status === 'fulfilled' && !result.value));
+
+    for (const { peer } of failed) {
+      const p2pPeerId = (peer as any).peerId;
+      if (p2pPeerId) {
+        this.addToRetryQueue(cid, ciphertext, mimeType, p2pPeerId, options);
+      }
+    }
+
     logger.info('[REPLICATION] Replication completed', {
       cid,
       successful: successful.length,
-      failed: enabledPeers.length - successful.length,
+      failed: failed.length,
+      queued: failed.length,
       total: enabledPeers.length,
       details: results.map((r, i) => ({
         peer: enabledPeers[i].nodeId,
@@ -212,12 +645,27 @@ export class ReplicationService {
       }))
     });
 
-    // Track replication in manager for stats
-    if (successful.length > 0) {
-      replicationManager.trackReplication(cid, successful);
+      // Track replication in manager for stats
+      if (successful.length > 0) {
+        replicationManager.trackReplication(cid, successful);
+      }
+      
+      return successful;
+    } finally {
+      // Remove from in-progress set
+      this.replicationInProgress.delete(cid);
+      
+      // Process next queued replication if any
+      if (this.replicationQueue.length > 0) {
+        const nextReplication = this.replicationQueue.shift();
+        if (nextReplication) {
+          // Execute next replication asynchronously
+          nextReplication().catch((err: Error) =>
+            logger.error('[REPLICATION] Queued replication failed', { error: err.message })
+          );
+        }
+      }
     }
-    
-    return successful;
   }
 
   /**
@@ -351,6 +799,24 @@ export class ReplicationService {
    */
   getEnabledPeerCount(): number {
     return this.peers.filter(p => p.enabled).length;
+  }
+
+  /**
+   * Get actively replicating peer count (enabled + healthy + connected via P2P)
+   */
+  getReplicatingPeerCount(): number {
+    if (!p2pService.isStarted()) {
+      return 0;
+    }
+    
+    // Get actually connected P2P peer IDs
+    const connectedPeerIds = new Set(p2pService.getConnectedPeers());
+    
+    // Count peers that are: enabled, healthy, AND actually connected via P2P
+    return this.peers.filter(p => {
+      const peerData = p as any;
+      return p.enabled && p.healthy && peerData.peerId && connectedPeerIds.has(peerData.peerId);
+    }).length;
   }
 
   /**
@@ -585,9 +1051,18 @@ export class ReplicationService {
       let pulled = 0;
       let failed = 0;
 
+      // Import blocked content service
+      const { blockedContentService } = await import('./blocked-content.service.js');
+
       for (const peer of this.peers.filter(p => p.enabled && p.healthy)) {
         const p2pPeerId = (peer as any).peerId;
         if (!p2pPeerId) continue;
+
+        // Check if peer is blocked
+        if (await blockedContentService.isPeerBlocked(p2pPeerId)) {
+          logger.info('Skipping pull from blocked peer', { peerId: p2pPeerId.slice(0, 12) });
+          continue;
+        }
 
         try {
           // Get peer's blob list via P2P
@@ -687,6 +1162,15 @@ export class ReplicationService {
       clearInterval(this.refreshInterval);
       this.refreshInterval = null;
     }
+    if (this.retryInterval) {
+      clearInterval(this.retryInterval);
+      this.retryInterval = null;
+    }
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+    }
+    logger.info('[REPLICATION] Service shutdown complete');
   }
 }
 

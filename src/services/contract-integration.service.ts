@@ -25,10 +25,13 @@ const NODE_REGISTRY_ABI = [
   'function deregisterNode(bytes32 nodeId)',
   'function minVersion() view returns (string)',
   'function setMinVersion(string version)',
+  'function replicationFactor() view returns (uint256)',
+  'function setReplicationFactor(uint256 factor)',
   'event NodeRegistered(bytes32 indexed nodeId, address indexed owner)',
   'event NodeUpdated(bytes32 indexed nodeId, string peerId, bytes32 metadataHash)',
   'event NodeDeactivated(bytes32 indexed nodeId)',
-  'event MinVersionUpdated(string version)'
+  'event MinVersionUpdated(string version)',
+  'event ReplicationFactorUpdated(uint256 newFactor)'
 ];
 
 const INCENTIVES_ABI = [
@@ -175,6 +178,120 @@ export class ContractIntegrationService {
   }
 
   /**
+   * Check if current node is registered on-chain
+   * Returns the node ID if registered, null otherwise
+   */
+  async checkCurrentNodeRegistration(publicKey: string, ownerAddress?: string): Promise<{
+    registered: boolean;
+    nodeId: string | null;
+  }> {
+    if (!this.nodeRegistry) {
+      logger.warn('Registry not initialized - cannot check registration');
+      return { registered: false, nodeId: null };
+    }
+
+    try {
+      // Normalize public key format (ensure 0x prefix for comparison)
+      const normalizedPublicKey = publicKey.startsWith('0x') ? publicKey : `0x${publicKey}`;
+      
+      // Try to find by owner address first if provided
+      if (ownerAddress) {
+        logger.info('Checking registration by owner address', { owner: ownerAddress });
+        const nodeId = await this.getNodeByOwner(ownerAddress);
+        logger.info('getNodeByOwner result', { nodeId: nodeId || 'null' });
+        
+        if (nodeId) {
+          const node = await this.getNode(nodeId);
+          logger.info('getNode result', { 
+            nodeId: nodeId.slice(0, 16) + '...',
+            active: node?.active,
+            owner: node?.owner,
+            publicKey: node?.publicKey?.slice(0, 32) + '...'
+          });
+          
+          if (node && node.active) {
+            // IMPORTANT: Verify the public key matches this node
+            // Multiple nodes can have the same owner, but only one public key per node
+            const nodePublicKey = node.publicKey.startsWith('0x') ? node.publicKey : `0x${node.publicKey}`;
+            const publicKeysMatch = nodePublicKey.toLowerCase() === normalizedPublicKey.toLowerCase();
+            
+            logger.info('Verifying public key match', {
+              nodePublicKey: nodePublicKey.slice(0, 32) + '...',
+              searchPublicKey: normalizedPublicKey.slice(0, 32) + '...',
+              match: publicKeysMatch
+            });
+            
+            if (publicKeysMatch) {
+              logger.info('Node found by owner address with matching public key', { 
+                nodeId: nodeId.slice(0, 16) + '...', 
+                owner: ownerAddress 
+              });
+              return { registered: true, nodeId };
+            } else {
+              logger.warn('Node found by owner but public key does not match - different node', {
+                nodeId: nodeId.slice(0, 16) + '...',
+                registeredKey: nodePublicKey.slice(0, 32) + '...',
+                currentKey: normalizedPublicKey.slice(0, 32) + '...'
+              });
+            }
+          } else {
+            logger.warn('Node found by owner but not active', {
+              nodeId: nodeId.slice(0, 16) + '...',
+              active: node?.active
+            });
+          }
+        } else {
+          logger.info('No node found for owner address', { owner: ownerAddress });
+        }
+      }
+
+      // Fallback: search all active nodes by public key
+      const activeNodeIds = await this.getActiveNodes();
+      logger.info('Checking registration by public key', { 
+        publicKey: normalizedPublicKey.slice(0, 16) + '...', 
+        totalActiveNodes: activeNodeIds.length 
+      });
+      
+      for (const nodeId of activeNodeIds) {
+        try {
+          const node = await this.getNode(nodeId);
+          if (!node) continue;
+          
+          // Compare normalized public keys (both with 0x prefix)
+          const nodePublicKey = node.publicKey.startsWith('0x') ? node.publicKey : `0x${node.publicKey}`;
+          
+          logger.info('Comparing public keys', {
+            nodeId: nodeId.slice(0, 16) + '...',
+            registryKey: nodePublicKey.slice(0, 32) + '...',
+            searchKey: normalizedPublicKey.slice(0, 32) + '...',
+            match: nodePublicKey.toLowerCase() === normalizedPublicKey.toLowerCase()
+          });
+          
+          if (nodePublicKey.toLowerCase() === normalizedPublicKey.toLowerCase()) {
+            logger.info('Node found by public key', { 
+              nodeId: nodeId.slice(0, 16) + '...',
+              publicKey: normalizedPublicKey.slice(0, 16) + '...'
+            });
+            return { registered: true, nodeId };
+          }
+        } catch (err) {
+          // Skip nodes that fail to load
+          continue;
+        }
+      }
+
+      logger.warn('Node not found in registry', { 
+        publicKey: normalizedPublicKey.slice(0, 16) + '...',
+        ownerAddress 
+      });
+      return { registered: false, nodeId: null };
+    } catch (error) {
+      logger.error('Failed to check node registration', error);
+      return { registered: false, nodeId: null };
+    }
+  }
+
+  /**
    * Get node ID by peer ID
    */
   async getNodeByPeerId(peerId: string): Promise<string | null> {
@@ -299,6 +416,33 @@ export class ContractIntegrationService {
     } catch (error: any) {
       logger.warn('Failed to get min version from contract', { error: error.message });
       return null;
+    }
+  }
+
+  /**
+   * Get network-wide replication factor from contract
+   * Returns 0 if contract is not available or not set
+   */
+  async getReplicationFactor(): Promise<number> {
+    if (!this.nodeRegistry) {
+      logger.warn('Registry not initialized, cannot get replication factor');
+      return 0;
+    }
+
+    try {
+      const factor = await this.nodeRegistry.replicationFactor();
+      const factorNum = Number(factor);
+      
+      if (factorNum === 0) {
+        logger.warn('Replication factor not set in contract');
+        return 0;
+      }
+      
+      logger.info('Replication factor from contract', { factor: factorNum });
+      return factorNum;
+    } catch (error: any) {
+      logger.error('Failed to get replication factor from contract', { error: error.message });
+      return 0;
     }
   }
 

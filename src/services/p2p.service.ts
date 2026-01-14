@@ -8,8 +8,7 @@
 import { createLibp2p, Libp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
-// webRTC import commented out - not needed for server-side nodes
-// import { webRTC } from '@libp2p/webrtc';
+import { webRTC } from '@libp2p/webrtc';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { kadDHT } from '@libp2p/kad-dht';
@@ -65,27 +64,52 @@ class P2PService extends EventEmitter {
    * This ensures the peerId stays the same across restarts
    */
   private async loadOrGeneratePrivateKey(): Promise<any> {
-    const { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } = await import('@libp2p/crypto/keys');
+    const { generateKeyPair } = await import('@libp2p/crypto/keys');
+    const { createHash } = await import('crypto');
     
+    // If owner address is configured, derive P2P identity deterministically from it
+    // This ensures one consistent peer ID per wallet address
+    if (config.ownerAddress && config.ownerAddress !== '') {
+      logger.info('Deriving P2P identity from owner address (ECDSA secp256k1)', { 
+        owner: config.ownerAddress.slice(0, 10) + '...' 
+      });
+      
+      // Derive a deterministic 32-byte seed from the owner address
+      // This seed will be used as the ECDSA private key
+      const seed = createHash('sha256')
+        .update('bytecave-p2p-identity')
+        .update(config.ownerAddress.toLowerCase())
+        .digest();
+      
+      // Use secp256k1 (ECDSA) instead of Ed25519 for Ethereum compatibility
+      // This allows on-chain signature verification using ecrecover
+      const { privateKeyFromRaw } = await import('@libp2p/crypto/keys');
+      const privateKey = privateKeyFromRaw(seed);
+      
+      logger.info('P2P identity derived from owner address (ECDSA)', {
+        keyType: privateKey.type
+      });
+      return privateKey;
+    }
+    
+    // Fallback: Use file-based identity for nodes without owner address
+    const { privateKeyFromProtobuf, privateKeyToProtobuf } = await import('@libp2p/crypto/keys');
     const keyPath = path.join(config.dataDir, 'p2p-identity.json');
     
     try {
-      // Try to load existing identity
       const keyData = JSON.parse(await fs.readFile(keyPath, 'utf8'));
       const privateKey = privateKeyFromProtobuf(Buffer.from(keyData.privateKey, 'base64'));
-      logger.info('Loaded existing P2P identity');
+      logger.info('Loaded existing P2P identity from file');
       return privateKey;
     } catch (error) {
-      // Generate new identity
-      logger.info('Generating new P2P identity...');
+      logger.info('Generating new random P2P identity...');
       const privateKey = await generateKeyPair('Ed25519');
       
-      // Save for future use
       const keyData = {
         privateKey: Buffer.from(privateKeyToProtobuf(privateKey)).toString('base64')
       };
       await fs.writeFile(keyPath, JSON.stringify(keyData, null, 2), { mode: 0o600 });
-      logger.info('P2P identity saved');
+      logger.info('P2P identity saved to file');
       
       return privateKey;
     }
@@ -140,7 +164,11 @@ async start(): Promise<void> {
       }
 
       // ... (Transports setup - same as before) ...
-      const transports: any[] = [tcp(), webSockets()];
+      const transports: any[] = [
+        tcp(), 
+        webSockets(),
+        webRTC() // Enable WebRTC for browser-to-node P2P connections
+      ];
       if (config.p2pEnableRelay) {
         // Add circuit relay transport for being reachable through relay
         transports.push(circuitRelayTransport({
@@ -156,6 +184,12 @@ async start(): Promise<void> {
         listenAddresses.push('/p2p-circuit');
         logger.info('Circuit relay enabled - will listen on /p2p-circuit');
       }
+
+      // Add WebRTC listen addresses for direct browser connections
+      // WebRTC uses UDP and doesn't require specific port configuration
+      // The browser will use the WebRTC transport to connect directly
+      listenAddresses.push('/webrtc');
+      logger.info('WebRTC transport enabled for direct browser connections');
 
       this.node = await createLibp2p({
         privateKey,
@@ -289,6 +323,35 @@ async start(): Promise<void> {
       const peerId = this.node.peerId.toString();
       const addrs = this.node.getMultiaddrs().map(ma => ma.toString());
       this.emit('started', { peerId, addresses: addrs });
+
+      // Handle auto-registration after P2P is started and we have a peer ID
+      // Extract the raw secp256k1 public key for registration
+      const publicKeyProto = (this.node.peerId.publicKey as any).raw;
+      const protoBuffer = Buffer.from(publicKeyProto);
+      
+      let keyBytes: Buffer | undefined;
+      if (protoBuffer.length === 33) {
+        keyBytes = protoBuffer;
+      } else if (protoBuffer.length === 36) {
+        keyBytes = protoBuffer.slice(3);
+      } else {
+        for (let i = 0; i < protoBuffer.length - 33; i++) {
+          if (protoBuffer[i] === 0x02 || protoBuffer[i] === 0x03) {
+            keyBytes = protoBuffer.slice(i, i + 33);
+            break;
+          }
+        }
+      }
+      
+      if (keyBytes) {
+        const publicKeyHex = '0x' + keyBytes.toString('hex');
+        
+        // Import and call auto-registration service
+        const { autoRegisterService } = await import('./auto-register.service.js');
+        await autoRegisterService.handleAutoRegistration(peerId, publicKeyHex);
+      } else {
+        logger.warn('Could not extract public key for auto-registration');
+      }
 
     } catch (error) {
       logger.error('Failed to start P2P service', error);

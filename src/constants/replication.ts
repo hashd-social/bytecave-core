@@ -1,23 +1,34 @@
 /**
  * Replication Constants
  * 
- * These are protocol-level constants that ensure consistent behavior
- * across all nodes in the ByteCave network.
+ * Replication factor is read from the VaultNodesRegistry contract.
+ * This allows the network owner to adjust replication dynamically.
  */
 
 /**
- * Network-wide replication factor
- * 
- * All nodes maintain this many copies of each blob for redundancy.
- * This is a protocol constant to ensure:
- * - Consistent replication strategy across the network
- * - Predictable redundancy levels
- * - No coordination issues between nodes
- * - Efficient resource usage
- * 
- * @constant {number}
+ * Cached replication factor from contract
+ * This is updated periodically by the replication service
+ * Initialized to 0 until first fetch from contract
  */
-export const REPLICATION_FACTOR = 3;
+let cachedReplicationFactor: number = 0;
+
+/**
+ * Get current replication factor
+ * Returns cached value from contract (0 if not yet fetched)
+ */
+export function getReplicationFactor(): number {
+  return cachedReplicationFactor;
+}
+
+/**
+ * Update cached replication factor
+ * Called by replication service when fetching from contract
+ */
+export function updateReplicationFactor(factor: number): void {
+  if (factor >= 3) {
+    cachedReplicationFactor = factor;
+  }
+}
 
 /**
  * Default replication timeout in milliseconds

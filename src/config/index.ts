@@ -89,6 +89,13 @@ export const config: Config = {
   // Contract integration - config.json takes precedence
   rpcUrl: getConfigValue(persistedConfig.rpcUrl, process.env.RPC_URL || 'http://127.0.0.1:8545'),
   registryAddress: getConfigValue(persistedConfig.registryAddress, process.env.VAULT_REGISTRY_ADDRESS || ''),
+  
+  // Auto-registration on startup
+  autoRegisterOnChain: process.env.REGISTER_ON_CHAIN !== undefined 
+    ? getEnvBoolean('REGISTER_ON_CHAIN', false) 
+    : undefined,
+  privateKey: process.env.PRIVATE_KEY || '',
+  hashdTokenAddress: process.env.HASHD_TOKEN_ADDRESS || '',
 
   // P2P Configuration - config.json takes precedence
   p2pEnabled: getEnvBoolean('P2P_ENABLED', true),
@@ -286,6 +293,14 @@ function validateDataDirectorySafety(): void {
       );
     }
   }
+}
+
+// Save environment variables to config.json if they're not already persisted
+if (process.env.OWNER_ADDRESS && !persistedConfig.ownerAddress) {
+  configManager.updateNodeConfig({
+    ownerAddress: process.env.OWNER_ADDRESS
+  });
+  console.log('[ConfigManager] Saved OWNER_ADDRESS to config.json');
 }
 
 // Export ConfigManager for runtime config updates

@@ -133,6 +133,7 @@ export class StorageService {
       sender?: string;
       timestamp?: number;
       metadata?: Record<string, any>;
+      replicationSource?: 'local' | 'replicated';
     }
   ): Promise<void> {
     await this.ensureInitialized();
@@ -195,10 +196,12 @@ export class StorageService {
         timestamp: options?.timestamp,
         metadata: options?.metadata,
         replication: options?.fromPeer ? {
+          source: options.replicationSource || 'replicated',
           fromPeer: options.fromPeer,
           replicatedAt: Date.now(),
           replicatedTo: []
         } : {
+          source: options?.replicationSource || 'local',
           replicatedTo: []
         },
         metrics: {
@@ -404,7 +407,8 @@ export class StorageService {
       const blobs: BlobMetadata[] = [];
 
       for (const file of files) {
-        if (!file.endsWith('.json')) continue;
+        // Skip non-JSON files and system files
+        if (!file.endsWith('.json') || file.startsWith('.')) continue;
         
         const cid = file.replace('.json', '');
         try {
@@ -478,7 +482,9 @@ export class StorageService {
       let pinnedSize = 0;
 
       for (const file of files) {
-        if (file.endsWith('.tmp')) continue;
+        // Skip temporary files and system files
+        if (file.endsWith('.tmp') || file.startsWith('.')) continue;
+        
         const filePath = path.join(this.blobsDir, file);
         const stats = await fs.stat(filePath);
         totalSize += stats.size;
@@ -497,7 +503,7 @@ export class StorageService {
       }
 
       return {
-        blobCount: files.filter(f => !f.endsWith('.tmp')).length,
+        blobCount: files.filter(f => !f.endsWith('.tmp') && !f.startsWith('.')).length,
         totalSize,
         pinnedCount,
         pinnedSize

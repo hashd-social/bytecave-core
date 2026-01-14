@@ -18,7 +18,7 @@ import { metricsService } from '../services/metrics.service.js';
 import { storageAuthorizationService } from '../services/storage-authorization.service.js';
 import { logger } from '../utils/logger.js';
 import { generateCID, validateCiphertext } from '../utils/cid.js';
-import { REPLICATION_FACTOR } from '../constants/replication.js';
+import { getReplicationFactor } from '../constants/replication.js';
 import { 
   AuthorizedStoreRequest, 
   AuthorizedStoreResponse,
@@ -222,7 +222,7 @@ export async function storeHandler(req: Request, res: Response): Promise<void> {
       cid,
       timestamp: Date.now(),
       replicationStatus: {
-        target: REPLICATION_FACTOR,
+        target: getReplicationFactor(),
         confirmed: confirmedReplicas + 1 // +1 for this node
       }
     };

@@ -5,10 +5,9 @@
  * This is a local preference, not network-wide moderation.
  */
 
-import fs from 'fs/promises';
-import path from 'path';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
+import { getConfigManager } from '../config/config-manager.js';
 
 interface BlockedContent {
   version: number;
@@ -19,12 +18,12 @@ interface BlockedContent {
 
 export class BlockedContentService {
   private blockedContent: BlockedContent | null = null;
-  private configPath: string;
   private lastLoad: number = 0;
-  private readonly RELOAD_INTERVAL = 60000; // 1 minute
+  private readonly RELOAD_INTERVAL = 5000; // 5 seconds - check for config changes frequently
+  private reloadTimer: NodeJS.Timeout | null = null;
 
   constructor() {
-    this.configPath = path.join(process.cwd(), 'config', 'blocked-content.json');
+    // Blocked content is now stored in config.json
   }
 
   /**
@@ -37,6 +36,76 @@ export class BlockedContentService {
     }
 
     await this.load();
+    
+    // Clean up any blocked CIDs that are still in storage
+    if (this.blockedContent && this.blockedContent.cids.length > 0) {
+      await this.cleanupBlockedContent();
+    }
+    
+    // Start periodic reload to detect config changes
+    this.startPeriodicReload();
+  }
+  
+  /**
+   * Start periodic reload timer
+   */
+  private startPeriodicReload(): void {
+    if (this.reloadTimer) {
+      clearInterval(this.reloadTimer);
+    }
+    
+    this.reloadTimer = setInterval(async () => {
+      try {
+        await this.reload();
+      } catch (error) {
+        logger.error('Failed to reload blocked content', error);
+      }
+    }, this.RELOAD_INTERVAL);
+  }
+  
+  /**
+   * Stop periodic reload timer
+   */
+  stop(): void {
+    if (this.reloadTimer) {
+      clearInterval(this.reloadTimer);
+      this.reloadTimer = null;
+    }
+  }
+  
+  /**
+   * Delete all blocked CIDs from storage
+   */
+  private async cleanupBlockedContent(): Promise<void> {
+    if (!this.blockedContent) return;
+    
+    for (const cid of this.blockedContent.cids) {
+      try {
+        const { storageService } = await import('./storage.service.js');
+        await storageService.deleteBlob(cid);
+        logger.info('Blocked CID removed from storage during cleanup', { cid });
+      } catch (error: any) {
+        // Ignore if blob doesn't exist (already deleted)
+        if (error.code !== 'ENOENT') {
+          logger.error('Failed to delete blocked CID during cleanup', { 
+            cid, 
+            error: error.message 
+          });
+        }
+      }
+    }
+    
+    // Log final stats
+    try {
+      const { storageService } = await import('./storage.service.js');
+      const stats = await storageService.getStats();
+      logger.info('Storage stats after blocked content cleanup', { 
+        blobCount: stats.blobCount, 
+        totalSize: stats.totalSize 
+      });
+    } catch (error) {
+      logger.error('Failed to get storage stats after cleanup', error);
+    }
   }
 
   /**
@@ -73,24 +142,25 @@ export class BlockedContentService {
   }
 
   /**
-   * Load blocked content from file
+   * Load blocked content from config.json
    */
   async load(): Promise<void> {
     try {
-      // Check if file exists
-      try {
-        await fs.access(this.configPath);
-      } catch {
-        // Create default if doesn't exist
-        await this.createDefault();
-      }
-
-      const content = await fs.readFile(this.configPath, 'utf-8');
-      this.blockedContent = JSON.parse(content);
+      const configManager = getConfigManager();
+      const persistedConfig = configManager.getConfig();
+      
+      this.blockedContent = {
+        version: 1,
+        updatedAt: persistedConfig.lastUpdated || Date.now(),
+        cids: persistedConfig.blockedCids || [],
+        peerIds: persistedConfig.blockedPeerIds || []
+      };
+      
       this.lastLoad = Date.now();
 
       logger.info('Blocked content loaded', {
-        cids: this.blockedContent?.cids.length || 0
+        cids: this.blockedContent.cids.length,
+        peers: this.blockedContent.peerIds.length
       });
     } catch (error) {
       logger.error('Failed to load blocked content', error);
@@ -99,10 +169,42 @@ export class BlockedContentService {
   }
 
   /**
-   * Reload blocked content
+   * Reload blocked content and cleanup any newly blocked CIDs
    */
   async reload(): Promise<void> {
+    const oldCids = this.blockedContent?.cids || [];
+    const oldPeerIds = this.blockedContent?.peerIds || [];
     await this.load();
+    
+    // Check if new CIDs were added
+    const newCids = this.blockedContent?.cids || [];
+    const newPeerIds = this.blockedContent?.peerIds || [];
+    const addedCids = newCids.filter(cid => !oldCids.includes(cid));
+    const removedCids = oldCids.filter(cid => !newCids.includes(cid));
+    const removedPeerIds = oldPeerIds.filter(peerId => !newPeerIds.includes(peerId));
+    
+    // Clean up newly blocked CIDs
+    if (addedCids.length > 0) {
+      logger.info('New blocked CIDs detected, triggering cleanup', { count: addedCids.length });
+      await this.cleanupBlockedContent();
+    }
+    
+    // Trigger replication for unblocked CIDs or unblocked peers
+    if (removedCids.length > 0 || removedPeerIds.length > 0) {
+      if (removedCids.length > 0) {
+        logger.info('CIDs unblocked, triggering pull sync', { count: removedCids.length, cids: removedCids });
+      }
+      if (removedPeerIds.length > 0) {
+        logger.info('Peers unblocked, triggering pull sync', { count: removedPeerIds.length, peerIds: removedPeerIds });
+      }
+      
+      try {
+        const { replicationService } = await import('./replication.service.js');
+        await replicationService.pullMissingBlobs();
+      } catch (error) {
+        logger.error('Failed to trigger pull sync for unblocked content/peers', error);
+      }
+    }
   }
 
   /**
@@ -120,6 +222,23 @@ export class BlockedContentService {
 
       await this.save();
       logger.info('CID added to blocked list', { cid });
+      
+      // Immediately delete the blob from storage
+      try {
+        const { storageService } = await import('./storage.service.js');
+        await storageService.deleteBlob(cidLower);
+        logger.info('Blocked CID removed from storage', { cid: cidLower });
+        
+        // Log updated stats
+        const stats = await storageService.getStats();
+        logger.info('Storage stats after deletion', { blobCount: stats.blobCount, totalSize: stats.totalSize });
+      } catch (error: any) {
+        logger.error('Failed to delete blocked CID from storage', { 
+          cid: cidLower, 
+          error: error.message,
+          code: error.code 
+        });
+      }
     }
   }
 
@@ -154,6 +273,23 @@ export class BlockedContentService {
 
       await this.save();
       logger.info('Peer added to blocked list', { peerId });
+      
+      // Immediately disconnect from the blocked peer
+      try {
+        const { p2pService } = await import('./p2p.service.js');
+        const node = (p2pService as any).node;
+        if (node) {
+          const connections = node.getConnections();
+          for (const conn of connections) {
+            if (conn.remotePeer.toString() === peerId) {
+              await conn.close();
+              logger.info('Disconnected from blocked peer', { peerId });
+            }
+          }
+        }
+      } catch (error) {
+        logger.error('Failed to disconnect from blocked peer', { peerId, error });
+      }
     }
   }
 
@@ -203,26 +339,15 @@ export class BlockedContentService {
     };
   }
 
-  private async createDefault(): Promise<void> {
-    const configDir = path.dirname(this.configPath);
-    await fs.mkdir(configDir, { recursive: true });
-
-    const defaultContent = this.getDefault();
-    await fs.writeFile(
-      this.configPath,
-      JSON.stringify(defaultContent, null, 2)
-    );
-
-    logger.info('Created default blocked-content.json', { path: this.configPath });
-  }
-
   private async save(): Promise<void> {
     if (!this.blockedContent) return;
 
-    await fs.writeFile(
-      this.configPath,
-      JSON.stringify(this.blockedContent, null, 2)
-    );
+    const configManager = getConfigManager();
+    configManager.updateNodeConfig({
+      blockedCids: this.blockedContent.cids,
+      blockedPeerIds: this.blockedContent.peerIds,
+      lastUpdated: Date.now()
+    });
   }
 }
 

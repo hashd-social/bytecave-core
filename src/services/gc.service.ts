@@ -11,7 +11,7 @@
  */
 
 import { config } from '../config/index.js';
-import { REPLICATION_FACTOR } from '../constants/replication.js';
+import { getReplicationFactor } from '../constants/replication.js';
 import { logger } from '../utils/logger.js';
 import { storageService } from './storage.service.js';
 import { shouldNodeStoreCid } from '../utils/sharding.js';
@@ -343,7 +343,7 @@ export class GarbageCollectionService {
 
     // We need at least replicationFactor - 1 other nodes
     // (since we're about to delete our copy)
-    const requiredOtherReplicas = REPLICATION_FACTOR - 1;
+    const requiredOtherReplicas = getReplicationFactor() - 1;
 
     if (knownReplicas < requiredOtherReplicas) {
       logger.debug('Insufficient replicas for deletion', {

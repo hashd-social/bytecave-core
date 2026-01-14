@@ -5,12 +5,14 @@ Decentralized storage node for the ByteCave network. Provides encrypted blob sto
 ## Features
 
 - **P2P Storage** - Distributed blob storage with libp2p
+- **WebRTC Support** - Direct browser-to-node P2P connections via WebRTC
 - **Sharding** - Deterministic shard assignment via CID modulo for horizontal scaling
 - **Encryption** - AES-256-GCM encryption for all stored data
 - **Proof Generation** - Cryptographic proofs for storage verification
 - **Replication** - Automatic data replication across network
 - **NAT Traversal** - Circuit relay support for NAT'd nodes
-- **HTTP API** - RESTful API for storage operations
+- **HTTP API** - RESTful API for local/admin operations
+- **P2P Protocols** - Health checks, blob retrieval, and storage via libp2p streams
 - **Contract Integration** - On-chain node registration
 
 ## Quick Start
@@ -168,14 +170,23 @@ Node → Connects to Relay
 
 ### Protocols
 
-- **Circuit Relay v2** - NAT traversal
+**Transports:**
+- **TCP** - Node-to-node direct connections (only when both nodes have public IPs)
+- **WebSockets** - Node-to-relay connections (primary transport for NAT'd nodes)
+- **WebRTC** - Browser-to-node P2P connections
+- **Circuit Relay v2** - NAT traversal for all peers (browsers and NAT'd nodes)
+
+**Discovery:**
 - **Kad-DHT** - Peer discovery and routing
 - **FloodSub** - Peer announcements and broadcast messages
-- **Custom Protocols**:
-  - `/bytecave/store/1.0.0` - Store requests
-  - `/bytecave/retrieve/1.0.0` - Retrieve requests
-  - `/bytecave/replicate/1.0.0` - Replication
-  - `/bytecave/health/1.0.0` - Health checks
+- **mDNS** - Local network discovery (optional)
+
+**Custom Protocols:**
+- `/bytecave/store/1.0.0` - Store requests from browsers
+- `/bytecave/blob/1.0.0` - Blob retrieval
+- `/bytecave/replicate/1.0.0` - Node-to-node replication
+- `/bytecave/health/1.0.0` - Health checks (P2P, no HTTP required)
+- `/bytecave/info/1.0.0` - Node info for registration
 
 ### Sharding
 
