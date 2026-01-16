@@ -64,7 +64,7 @@ import {
 } from './routes/feed.route.js';
 import { nodeInfoHandler } from './routes/node-info.route.js';
 import { networkStatsHandler } from './routes/network-stats.route.js';
-import { getPeers } from './routes/health.route.js';
+import { getPeers, signRegistration } from './routes/health.route.js';
 import { connectPeerHandler } from './routes/peer-connect.route.js';
 import { contractIntegrationService } from './services/contract-integration.service.js';
 import { ethers } from 'ethers';
@@ -153,6 +153,7 @@ app.get('/blobs', readLimiter, listHandler);
 app.get('/health', monitoringLimiter, healthHandler);
 app.get('/peers', monitoringLimiter, getPeers);
 app.post('/peers/connect', generalLimiter, connectPeerHandler);
+app.post('/sign-registration', generalLimiter, signRegistration);
 app.get('/status', monitoringLimiter, statusHandler);
 
 // Broadcast endpoints

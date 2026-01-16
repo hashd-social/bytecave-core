@@ -303,3 +303,45 @@ export async function getPeers(_req: Request, res: Response): Promise<void> {
     res.status(500).json({ error: 'Failed to get peers' });
   }
 }
+
+/**
+ * POST /sign-registration
+ * Generate a signature for node registration
+ * Body: { ownerAddress: string }
+ */
+export async function signRegistration(req: Request, res: Response): Promise<void> {
+  try {
+    const { ownerAddress } = req.body;
+    
+    if (!ownerAddress) {
+      res.status(400).json({ error: 'ownerAddress is required' });
+      return;
+    }
+
+    // Get the public key to verify it matches
+    const publicKey = p2pService.getSecp256k1PublicKey();
+    
+    // Sign the owner address with the node's secp256k1 private key
+    const signature = await p2pService.signMessage(ownerAddress);
+    
+    if (!signature) {
+      res.status(500).json({ error: 'Failed to generate signature - node may not have secp256k1 key' });
+      return;
+    }
+
+    logger.info('Generated registration signature', {
+      ownerAddress,
+      publicKey: publicKey?.slice(0, 20) + '...',
+      signature: signature.slice(0, 20) + '...'
+    });
+
+    res.json({
+      signature,
+      ownerAddress,
+      publicKey // Include for debugging
+    });
+  } catch (error: any) {
+    logger.error('Failed to sign registration', error);
+    res.status(500).json({ error: 'Failed to sign registration' });
+  }
+}

@@ -17,37 +17,44 @@ Decentralized storage node for the ByteCave network. Provides encrypted blob sto
 - **Auto-Registration** - Automatic registration on startup when enabled
 - **Auto-Deregistration** - Automatic deregistration when REGISTER_ON_CHAIN=false
 
-## Cryptographic Keys
+## Cryptographic Keys & Security Model
 
 ByteCave nodes use **two different cryptographic key pairs** for different purposes. Understanding the distinction is critical for proper node operation and registration.
 
-### secp256k1 Key Pair (Contract Registration)
+### secp256k1 Key Pair (Contract Registration & P2P Identity)
 
-**Purpose:** On-chain node registration and verification
+**Purpose:** On-chain node registration, signature verification, and libp2p peer identity
 
 - **Algorithm:** secp256k1 (same as Ethereum)
-- **Public Key Format:** 33 bytes compressed (starts with `0x02` or `0x03`)
-- **Generation:** Deterministically derived from `OWNER_ADDRESS` using `keccak256("bytecave-p2p-identity" + ownerAddress)`
+- **Public Key Format:** 64 bytes uncompressed (without 0x04 prefix) for contract registration
+- **Private Key Derivation:** Deterministically derived from `OWNER_ADDRESS`:
+  ```
+  seed = SHA256("bytecave-p2p-identity" + ownerAddress.toLowerCase())
+  privateKey = secp256k1.privateKeyFromSeed(seed)
+  ```
 - **Used For:**
   - Registering nodes in VaultNodeRegistry contract
   - On-chain signature verification via `ecrecover`
-  - Proving node ownership
+  - Proving node ownership cryptographically
+  - Deriving libp2p peer ID
 
 **Where to find it:**
-- Health endpoint: `/health` → `secp256k1PublicKey` field
-- Startup logs: Displayed as "secp256k1 Public Key (for contract registration)"
+- Health endpoint: `/health` → `secp256k1PublicKey` field (64 bytes uncompressed)
+- Startup logs: Displayed as "🔑 secp256k1 Public Key (for contract registration)"
 - Desktop app: Status tab → "secp256k1 Public Key"
 
-**When to use it:**
-- When registering your node on-chain (via dashboard or desktop app)
-- When providing your public key to contract registration functions
+**Security Properties:**
+- **Deterministic:** Same owner address always produces the same key pair and peer ID
+- **Provable Ownership:** Only the owner can generate valid signatures with the derived private key
+- **Non-Transferable:** Cannot register someone else's node without their private key
+- **Unique:** Each owner address produces a unique secp256k1 key pair
 
 ### Ed25519 Key Pair (Storage Proofs)
 
-**Purpose:** Storage proof signing and libp2p identity
+**Purpose:** Storage proof signing and verification
 
 - **Algorithm:** Ed25519
-- **Public Key Format:** 44 bytes DER-encoded (starts with `0x302a3005...`)
+- **Public Key Format:** 32 bytes raw Ed25519 public key
 - **Generation:** Auto-generated on first startup, stored in `node-key.json`
 - **Used For:**
   - Signing storage proofs for incentive claims
@@ -67,10 +74,189 @@ ByteCave nodes use **two different cryptographic key pairs** for different purpo
 
 | Key Type | Size | Purpose | Where to Use |
 |----------|------|---------|-------------|
-| **secp256k1** | 33 bytes | Contract registration | Dashboard/Desktop registration |
-| **Ed25519** | 44 bytes | Storage proofs | Auto-managed by node |
+| **secp256k1** | 64 bytes uncompressed | Contract registration | Dashboard/Desktop registration |
+| **Ed25519** | 32 bytes | Storage proofs | Auto-managed by node |
 
-**Important:** When registering your node on-chain, always use the **secp256k1 public key** (33 bytes), not the Ed25519 key.
+**Important:** When registering your node on-chain, always use the **secp256k1 public key** (64 bytes uncompressed), not the Ed25519 key.
+
+## Node Registration Process
+
+### Overview
+
+Node registration is a cryptographic process that proves ownership of a node and prevents unauthorized registrations. The process uses deterministic key derivation and signature verification to ensure security.
+
+### Security Model
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. KEY DERIVATION (Off-chain)                                   │
+│    Owner Address → SHA256("bytecave-p2p-identity" + address)    │
+│                 → secp256k1 Private Key                          │
+│                 → secp256k1 Public Key (64 bytes uncompressed)   │
+│                 → libp2p Peer ID                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. SIGNATURE GENERATION (Off-chain)                             │
+│    Message: keccak256(ownerAddress)                             │
+│    Prefix: "\x19Ethereum Signed Message:\n32" + messageHash     │
+│    Signature: secp256k1.sign(prefixedMessage, privateKey)       │
+│    Result: 65-byte signature (r, s, v)                          │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. ON-CHAIN VERIFICATION (Smart Contract)                       │
+│    a) Recover signer: ecrecover(signature) → recoveredAddress   │
+│    b) Derive expected: address(keccak256(publicKey))            │
+│    c) Verify: recoveredAddress == expectedAddress               │
+│    d) Check: One node per owner, unique peer ID                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Registration Steps
+
+#### 1. Start Your Node
+
+```bash
+# Set your owner address in .env
+OWNER_ADDRESS=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+
+# Start the node
+yarn start
+```
+
+The node will:
+- Derive secp256k1 private key from your owner address
+- Generate the corresponding public key (64 bytes uncompressed)
+- Create a deterministic libp2p peer ID
+- Display the public key in startup logs
+
+#### 2. Get Your Public Key
+
+From startup logs:
+```
+🔑 secp256k1 Public Key (for contract registration):
+   0xfbb30b1a58ccf3aeb82f1ce7773d81b2d909341fa20836c70dcd093479c30873...
+   Length: 64 bytes (uncompressed, without 0x04 prefix)
+```
+
+Or via API:
+```bash
+curl http://localhost:5001/health | jq .secp256k1PublicKey
+```
+
+#### 3. Register On-Chain
+
+**Option A: Automatic Registration**
+```bash
+# Set in .env
+REGISTER_ON_CHAIN=true
+PRIVATE_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+OWNER_ADDRESS=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+VAULT_REGISTRY_ADDRESS=0x84eA74d481Ee0A5332c457a4d796187F6Ba67fEB
+HASHD_TOKEN_ADDRESS=0x7a2088a1bFc9d81c55368AE168C2C02570cB814F
+RPC_URL=http://127.0.0.1:8545
+
+# Restart node - it will auto-register
+yarn start
+```
+
+**Option B: Manual Registration (Desktop App)**
+1. Open bytecave-desktop
+2. Click "Register Node" button
+3. The app will:
+   - Fetch your secp256k1 public key from the node
+   - Request a signature from the node (via `/sign-registration` endpoint)
+   - Submit registration transaction to VaultNodeRegistry contract
+
+**Option C: Manual Registration (Dashboard)**
+1. Open the dashboard
+2. Navigate to Vault tab
+3. Click "Register Node"
+4. Follow the same process as desktop app
+
+#### 4. Verification
+
+After registration, verify on-chain:
+```bash
+# Check if node is registered
+curl http://localhost:5001/health | jq .registeredOnChain
+# Should return: true
+
+# Get on-chain node ID
+curl http://localhost:5001/health | jq .onChainNodeId
+```
+
+### Security Guarantees
+
+#### ✅ **Provable Ownership**
+- Only the owner who controls the wallet can derive the correct secp256k1 private key
+- Signature verification proves the registrant controls the private key
+- **Attack Prevention:** Cannot register someone else's node without their wallet
+
+#### ✅ **Non-Transferable**
+- Keys are deterministically derived from owner address
+- Same owner always produces same key pair and peer ID
+- **Attack Prevention:** Cannot steal or transfer node identity
+
+#### ✅ **Unique Registration**
+- Contract enforces one node per owner address
+- Contract prevents duplicate peer IDs
+- **Attack Prevention:** Cannot register multiple nodes or duplicate peer IDs
+
+#### ✅ **Cryptographic Verification**
+- Signature verification uses Ethereum's `ecrecover`
+- Address derivation uses standard Ethereum address computation
+- **Attack Prevention:** Cannot forge signatures or bypass verification
+
+### Signature Verification Details
+
+The contract verifies signatures using this process:
+
+```solidity
+// 1. Hash the owner address
+bytes32 messageHash = keccak256(abi.encodePacked(ownerAddress));
+
+// 2. Add Ethereum signed message prefix
+bytes32 ethSignedMessageHash = keccak256(
+    abi.encodePacked("\x19Ethereum Signed Message:\n32", messageHash)
+);
+
+// 3. Recover signer from signature
+address signer = ecrecover(ethSignedMessageHash, v, r, s);
+
+// 4. Derive expected signer from public key
+address expectedSigner = address(uint160(uint256(keccak256(publicKey))));
+
+// 5. Verify they match
+require(signer == expectedSigner, "Signature does not match public key");
+```
+
+This ensures:
+- The signature was created by the private key corresponding to the public key
+- The registrant controls the secp256k1 private key
+- The registration is legitimate and authorized
+
+### Troubleshooting
+
+**"Signature does not match public key"**
+- Ensure you're using the 64-byte uncompressed secp256k1 public key
+- Verify the node is running and has derived keys from `OWNER_ADDRESS`
+- Check that the signature is being generated by the correct node
+
+**"Owner already has node"**
+- Each owner address can only register one node
+- Deregister the existing node first if you want to register a new one
+
+**"Duplicate peer ID"**
+- The peer ID is already registered by another node
+- This should not happen with deterministic key derivation
+- Verify your `OWNER_ADDRESS` is unique
+
+**"Insufficient stake"**
+- Ensure you have approved sufficient HASHD tokens
+- Minimum stake is typically 1000 HASHD tokens
+- Check token balance and allowance
 
 ## Quick Start
 

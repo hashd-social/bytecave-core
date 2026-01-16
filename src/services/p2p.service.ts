@@ -59,6 +59,7 @@ class P2PService extends EventEmitter {
   private announceTimer: NodeJS.Timeout | null = null;
   private started = false;
   private secp256k1PublicKey: string | null = null;
+  private secp256k1PrivateKey: Buffer | null = null;
 
   /**
    * Load or generate persistent libp2p private key
@@ -81,6 +82,9 @@ class P2PService extends EventEmitter {
         .update('bytecave-p2p-identity')
         .update(config.ownerAddress.toLowerCase())
         .digest();
+      
+      // Store the raw secp256k1 private key for signature generation
+      this.secp256k1PrivateKey = seed;
       
       // Use secp256k1 (ECDSA) instead of Ed25519 for Ethereum compatibility
       // This allows on-chain signature verification using ecrecover
@@ -352,8 +356,15 @@ async start(): Promise<void> {
       }
       
       if (keyBytes) {
-        const publicKeyHex = '0x' + keyBytes.toString('hex');
-        this.secp256k1PublicKey = publicKeyHex; // Store for later access
+        // Convert compressed key to uncompressed for Ethereum address derivation
+        // The contract uses keccak256(publicKey) to derive address, which requires uncompressed format
+        const { ethers } = await import('ethers');
+        const signingKey = new ethers.SigningKey('0x' + this.secp256k1PrivateKey!.toString('hex'));
+        const uncompressedPublicKey = signingKey.publicKey; // Full uncompressed: 0x04 + x + y (65 bytes)
+        
+        // Remove the 0x04 prefix for the contract (it expects 64 bytes)
+        const publicKeyForContract = '0x' + uncompressedPublicKey.slice(4); // Remove '0x04'
+        this.secp256k1PublicKey = publicKeyForContract;
         
         // Log key information for user clarity
         logger.info('='.repeat(80));
@@ -364,8 +375,8 @@ async start(): Promise<void> {
         logger.info(`   ${peerId}`);
         logger.info('');
         logger.info('🔑 secp256k1 Public Key (for contract registration):');
-        logger.info(`   ${publicKeyHex}`);
-        logger.info(`   Length: ${keyBytes.length} bytes (compressed)`);
+        logger.info(`   ${publicKeyForContract}`);
+        logger.info(`   Length: 64 bytes (uncompressed, without 0x04 prefix)`);
         logger.info(`   Use this key when registering your node on-chain`);
         logger.info('');
         logger.info('🔐 Ed25519 Public Key (for storage proofs):');
@@ -380,7 +391,7 @@ async start(): Promise<void> {
         
         // Import and call auto-registration service
         const { autoRegisterService } = await import('./auto-register.service.js');
-        await autoRegisterService.handleAutoRegistration(peerId, publicKeyHex);
+        await autoRegisterService.handleAutoRegistration(peerId, publicKeyForContract);
       } else {
         logger.warn('Could not extract public key for auto-registration');
       }
@@ -787,6 +798,64 @@ async start(): Promise<void> {
    */
   getSecp256k1PublicKey(): string | null {
     return this.secp256k1PublicKey;
+  }
+
+  /**
+   * Sign a message with the secp256k1 private key
+   * Used for contract registration to prove ownership of the peer ID
+   */
+  async signMessage(message: string): Promise<string | null> {
+    if (!this.secp256k1PrivateKey) {
+      logger.warn('Cannot sign message: secp256k1 private key not available');
+      return null;
+    }
+
+    try {
+      const { ethers } = await import('ethers');
+      
+      // Create a signing key from the raw private key
+      const signingKey = new ethers.SigningKey('0x' + this.secp256k1PrivateKey.toString('hex'));
+      
+      // Get the public key and derive its address
+      const publicKeyFromPrivate = signingKey.publicKey;
+      const addressFromPublicKey = ethers.computeAddress(publicKeyFromPrivate);
+      
+      logger.info('Signature generation debug', {
+        ownerAddress: message,
+        publicKeyFromPrivate: publicKeyFromPrivate.slice(0, 20) + '...',
+        addressFromPublicKey,
+        storedPublicKey: this.secp256k1PublicKey?.slice(0, 20) + '...'
+      });
+      
+      // Message is the owner address - hash it as the contract does: keccak256(abi.encodePacked(ownerAddress))
+      const messageHash = ethers.keccak256(message);
+      
+      // Add Ethereum signed message prefix manually (same as contract)
+      // "\x19Ethereum Signed Message:\n32" + messageHash
+      const prefix = '\x19Ethereum Signed Message:\n32';
+      const prefixedMessage = ethers.concat([
+        ethers.toUtf8Bytes(prefix),
+        ethers.getBytes(messageHash)
+      ]);
+      const ethSignedMessageHash = ethers.keccak256(prefixedMessage);
+      
+      // Sign the prefixed message hash
+      const signature = signingKey.sign(ethSignedMessageHash);
+      
+      // Verify the signature recovers to the correct address
+      const recoveredAddress = ethers.recoverAddress(ethSignedMessageHash, signature);
+      logger.info('Signature verification', {
+        recoveredAddress,
+        expectedAddress: addressFromPublicKey,
+        matches: recoveredAddress === addressFromPublicKey
+      });
+      
+      // Serialize to compact format (r + s + v)
+      return ethers.Signature.from(signature).serialized;
+    } catch (error) {
+      logger.error('Failed to sign message', { error });
+      return null;
+    }
   }
 
   /**

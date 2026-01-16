@@ -39,6 +39,7 @@
     "@libp2p/webrtc": "^6.0.10",
     "@libp2p/websockets": "^10.0.0",
     "@multiformats/multiaddr": "^13.0.0",
+    "@noble/curves": "^2.0.1",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "ethers": "^6.0.0",
