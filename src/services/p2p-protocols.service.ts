@@ -380,7 +380,7 @@ class P2PProtocolsService {
       
       if (contractIntegrationService.isInitialized()) {
         try {
-          // Get this node's P2P public key (the one used for registration)
+          // Get this node's secp256k1 public key (the one used for registration)
           const { p2pService } = await import('./p2p.service.js');
           
           if (!p2pService.isStarted()) {
@@ -392,51 +392,24 @@ class P2PProtocolsService {
             return;
           }
 
-          // Get the P2P public key from the libp2p node
-          const node = (p2pService as any).node;
-          if (!node?.peerId?.publicKey) {
-            logger.warn('Store rejected: No P2P public key available', { cid: request.cid });
+          // Get the 64-byte uncompressed secp256k1 public key (same as used for registration)
+          const secp256k1PublicKey = p2pService.getSecp256k1PublicKey();
+          
+          if (!secp256k1PublicKey) {
+            logger.warn('Store rejected: No secp256k1 public key available', { cid: request.cid });
             await this.writeMessage(stream, { 
               success: false, 
-              error: 'Node not configured properly (no P2P public key)' 
+              error: 'Node not configured properly (no secp256k1 public key)' 
             });
             return;
           }
 
-          // Extract the raw secp256k1 public key bytes (same as registration)
-          const publicKeyProto = (node.peerId.publicKey as any).raw;
-          const protoBuffer = Buffer.from(publicKeyProto);
-          
-          // Extract the 33-byte key from the protobuf (skip 3-byte header for typical secp256k1)
-          let keyBytes: Buffer | undefined;
-          if (protoBuffer.length === 33) {
-            keyBytes = protoBuffer;
-          } else if (protoBuffer.length === 36) {
-            keyBytes = protoBuffer.slice(3);
-          } else {
-            // Search for the key prefix
-            for (let i = 0; i < protoBuffer.length - 33; i++) {
-              if (protoBuffer[i] === 0x02 || protoBuffer[i] === 0x03) {
-                keyBytes = protoBuffer.slice(i, i + 33);
-                break;
-              }
-            }
-            if (!keyBytes) {
-              logger.warn('Store rejected: Could not extract public key', { cid: request.cid });
-              await this.writeMessage(stream, { 
-                success: false, 
-                error: 'Node public key format error' 
-              });
-              return;
-            }
-          }
-
-          // Calculate nodeId from public key (keccak256 hash - same as contract)
-          const { ethers } = await import('ethers');
-          const publicKey = '0x' + keyBytes.toString('hex');
-          const nodeId = ethers.keccak256(publicKey);
+          // Calculate nodeId using the centralized helper function
+          const { calculateNodeId } = await import('../utils/node-id.js');
+          const nodeId = calculateNodeId(secp256k1PublicKey);
           
           console.log('[P2P Store] Checking registration for nodeId:', nodeId.slice(0, 10) + '...');
+          console.log('[P2P Store] Using secp256k1 public key:', secp256k1PublicKey.slice(0, 20) + '...');
           
           // Check if this nodeId is registered on-chain
           const registeredNode = await contractIntegrationService.getNode(nodeId);
@@ -457,8 +430,8 @@ class P2PProtocolsService {
 
           logger.info('Node registration verified', { 
             nodeId: nodeId.slice(0, 10) + '...', 
-            publicKey: publicKey.slice(0, 10) + '...',
-            active: node.active 
+            publicKey: secp256k1PublicKey.slice(0, 20) + '...',
+            active: registeredNode.active 
           });
         } catch (error: any) {
           logger.warn('Store rejected: Could not verify node registration', { 

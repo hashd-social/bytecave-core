@@ -190,16 +190,23 @@ export class AutoRegisterService {
 
       logger.info(`Wallet address: ${signerAddress}`);
 
-      // Check if registered using contract integration service
-      const nodeId = await contractIntegrationService.getNodeByOwner(signerAddress);
-      if (!nodeId) {
-        logger.info('Node is not registered on-chain (nothing to deregister)');
+      // Calculate nodeId from secp256k1 public key (same as registration)
+      const { getNodePublicKey } = await import('../utils/node-id.js');
+      const { calculateNodeId } = await import('../utils/node-id.js');
+      
+      const publicKey = await getNodePublicKey();
+      if (!publicKey) {
+        logger.error('Cannot deregister: No secp256k1 public key available');
         return;
       }
+      
+      const nodeId = calculateNodeId(publicKey);
+      logger.info(`Calculated nodeId from public key: ${nodeId.slice(0, 16)}...`);
 
+      // Check if this nodeId is registered
       const nodeInfo = await contractIntegrationService.getNode(nodeId);
       if (!nodeInfo || !nodeInfo.active) {
-        logger.info('Node is already deregistered');
+        logger.info('Node is not registered on-chain (nothing to deregister)');
         return;
       }
 
