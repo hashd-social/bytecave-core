@@ -16,6 +16,8 @@ Decentralized storage node for the ByteCave network. Provides encrypted blob sto
 - **Contract Integration** - Optional on-chain node registration with auto-register/deregister
 - **Auto-Registration** - Automatic registration on startup when enabled
 - **Auto-Deregistration** - Automatic deregistration when REGISTER_ON_CHAIN=false
+- **File Size Limits** - 5MB maximum file size enforced across all storage and replication paths
+- **Chunked Message Sending** - Large messages (>64KB) automatically sent in chunks to prevent buffer overflow
 
 ## Cryptographic Keys & Security Model
 
@@ -555,6 +557,51 @@ tail -f logs/bytecave.log
 grep "Peer connected" logs/bytecave.log
 ```
 
+## File Size Limits
+
+ByteCave enforces a **5MB maximum file size** across all storage and replication operations to ensure network stability and prevent resource exhaustion.
+
+### Enforcement Points
+
+The 5MB limit is enforced at multiple layers for security:
+
+1. **Browser Client** - Files over 5MB are rejected before upload attempt
+2. **P2P Store Handler** - Nodes reject incoming store requests over 5MB
+3. **Replication Handler** - Nodes reject replication requests over 5MB (prevents malicious nodes from bypassing limits)
+4. **Web UI** - Upload interface validates file size before submission
+
+### Why 5MB?
+
+- **Network Stability** - Prevents large file transfers from overwhelming P2P streams
+- **Timeout Management** - Files up to 5MB complete within reasonable timeouts (30s + 10s/MB = ~80s max)
+- **Memory Efficiency** - Base64 encoding requires ~1.33x file size in memory
+- **Fair Resource Usage** - Ensures equitable storage across the network
+
+### Error Messages
+
+When a file exceeds 5MB, you'll see:
+```
+File size (X.XX MB) exceeds maximum allowed size of 5MB
+```
+
+### Technical Details
+
+**Timeout Calculation:**
+```javascript
+timeout = 30 seconds + (fileSize in MB × 10 seconds)
+// Example: 5MB file = 30s + 50s = 80 second timeout
+```
+
+**Chunked Sending:**
+- Messages over 64KB are automatically sent in 64KB chunks
+- Prevents stream buffer overflow on large files
+- Includes flow control and drain events
+
+**Validation:**
+- File size checked before base64 encoding
+- Ciphertext size validated after encoding
+- Replication requests validated to prevent bypass
+
 ## Security
 
 - All data encrypted with AES-256-GCM
@@ -562,6 +609,7 @@ grep "Peer connected" logs/bytecave.log
 - P2P connections use Noise protocol encryption
 - Proof generation uses Ed25519 signatures
 - No data stored in plaintext
+- **File size limits enforced at multiple layers** to prevent malicious nodes from bypassing restrictions
 
 ### Key Management
 
