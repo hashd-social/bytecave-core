@@ -255,82 +255,81 @@ class P2PProtocolsService {
         return;
       }
 
-      // SECURITY CHECK 5: Verify app authorization based on allowedApps list
-      // If allowedApps is set (non-empty), validate against it
-      // If allowedApps is empty, accept all registered apps
-      const hasAllowedAppsFilter = config.allowedApps && config.allowedApps.length > 0;
+      // SECURITY CHECK 5: MANDATORY ContentRegistry enforcement
+      // All content MUST be registered in ContentRegistry before replication
+      // This enforces hybrid approach: app allowlist check + mandatory registration verification
+      const { contentRegistryEnforcementService } = await import('./content-registry-enforcement.service.js');
       
-      if (hasAllowedAppsFilter) {
-        // Check if appId is provided and is in allowed apps list
-        if (!request.appId) {
-          logger.warn('Replication rejected: No appId provided', { 
-            cid: request.cid, 
-            from: remotePeer
-          });
-          await this.writeMessage(stream, { 
-            success: false, 
-            error: 'App ID required (node has app filter enabled)' 
-          });
-          return;
-        }
-        
-        if (!config.allowedApps.includes(request.appId)) {
-          logger.warn('Replication rejected: App not in allowed list', { 
-            cid: request.cid, 
-            appId: request.appId,
-            allowedApps: config.allowedApps,
-            from: remotePeer
-          });
-          await this.writeMessage(stream, { 
-            success: false, 
-            error: `App '${request.appId}' not authorized on this node` 
-          });
-          return;
-        }
-        
-        logger.debug('App authorization verified for replication', { 
+      const allowedApps = config.allowedApps && config.allowedApps.length > 0 ? config.allowedApps : undefined;
+      const verification = await contentRegistryEnforcementService.verifyContentForReplication(
+        request.cid,
+        request.appId,
+        allowedApps
+      );
+      
+      if (!verification.authorized) {
+        logger.warn('Replication rejected: Content not authorized', { 
           cid: request.cid, 
-          appId: request.appId 
+          from: remotePeer,
+          error: verification.error,
+          requestAppId: request.appId,
+          registeredAppId: verification.appId
         });
+        await this.writeMessage(stream, { 
+          success: false, 
+          error: verification.error || 'Content not authorized' 
+        });
+        return;
+      }
+      
+      // Update request.appId with the verified appId from ContentRegistry
+      if (verification.appId) {
+        request.appId = verification.appId;
+      }
+      
+      logger.debug('✅ Content authorization verified', { 
+        cid: request.cid, 
+        appId: verification.appId,
+        hasAllowlist: allowedApps !== undefined
+      });
+      
+      // SECURITY CHECK 6: On-chain verification (if requested by sender)
+      // If shouldVerifyOnChain is true, verify CID exists on-chain in authorized contracts
+      // This gives nodes flexibility to decide verification policy
+      if (request.shouldVerifyOnChain) {
+        const { storageAuthorizationService } = await import('./storage-authorization.service.js');
+        const onChainVerification = await storageAuthorizationService.verifyCIDOnChain(request.cid);
         
-        // SECURITY CHECK 6: On-chain verification (if requested by sender)
-        // If shouldVerifyOnChain is true, verify CID exists on-chain in authorized contracts
-        // This gives nodes flexibility to decide verification policy
-        if (request.shouldVerifyOnChain) {
-          const { storageAuthorizationService } = await import('./storage-authorization.service.js');
-          const onChainVerification = await storageAuthorizationService.verifyCIDOnChain(request.cid);
-          
-          if (!onChainVerification.authorized) {
-            logger.warn('Replication rejected: CID not found on-chain', { 
-              cid: request.cid, 
-              from: remotePeer,
-              error: onChainVerification.error,
-              shouldVerifyOnChain: request.shouldVerifyOnChain
-            });
-            await this.writeMessage(stream, { 
-              success: false, 
-              error: 'CID not authorized on-chain' 
-            });
-            return;
-          }
-          
-          logger.debug('On-chain verification passed', { 
-            cid: request.cid 
-          });
-        }
-        
-        // For media: verify sender was provided
-        if (!request.sender) {
-          logger.warn('Replication rejected: Missing sender', { 
+        if (!onChainVerification.authorized) {
+          logger.warn('Replication rejected: CID not found on-chain', { 
             cid: request.cid, 
-            from: remotePeer
+            from: remotePeer,
+            error: onChainVerification.error,
+            shouldVerifyOnChain: request.shouldVerifyOnChain
           });
           await this.writeMessage(stream, { 
             success: false, 
-            error: 'Missing sender metadata' 
+            error: 'CID not authorized on-chain' 
           });
           return;
         }
+        
+        logger.debug('On-chain verification passed', { 
+          cid: request.cid 
+        });
+      }
+      
+      // For media: verify sender was provided
+      if (!request.sender) {
+        logger.warn('Replication rejected: Missing sender', { 
+          cid: request.cid, 
+          from: remotePeer
+        });
+        await this.writeMessage(stream, { 
+          success: false, 
+          error: 'Missing sender metadata' 
+        });
+        return;
       }
 
       // Check if we already have this blob

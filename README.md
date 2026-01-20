@@ -706,6 +706,85 @@ await replicationService.replicateToAll(cid, ciphertext, 'application/json', {
 });
 ```
 
+## On-Chain Content Verification
+
+ByteCave integrates with the ContentRegistry smart contract to provide on-chain verification of content CIDs. This ensures that content stored on ByteCave nodes can be verified as authentic and authorized.
+
+### ContentRegistry Architecture
+
+**Two-Contract Pattern:**
+- **ContentRegistryStorage** - Eternal storage (never upgraded)
+- **ContentRegistry** - Logic contract (upgradeable)
+
+**Purpose:**
+- Universal registry for all content CIDs across applications
+- Used by nodes to verify content during replication
+- Application contracts (Messages, Posts, Comments) register CIDs atomically
+- Keeps storage layer agnostic and generic
+
+### Configuration
+
+Add ContentRegistry address to your node configuration:
+
+```typescript
+await contractIntegration.initialize({
+  rpcUrl: 'http://localhost:8545',
+  registryAddress: '0x...', // VaultNodeRegistry
+  incentivesAddress: '0x...', // Optional
+  contentRegistryAddress: '0x...' // ContentRegistry
+});
+```
+
+### CID Verification During Replication
+
+When `shouldVerifyOnChain` is `true`, nodes verify CIDs before accepting replication:
+
+```typescript
+// In replication service
+if (metadata.shouldVerifyOnChain) {
+  const isRegistered = await contractIntegration.isContentRegistered(cid);
+  if (!isRegistered) {
+    // Reject replication - CID not registered on-chain
+    return false;
+  }
+}
+```
+
+### Content Registration Flow
+
+**Application contracts register CIDs atomically:**
+
+1. **Messages** - Thread CIDs registered when messages are posted
+2. **Posts** - Post CIDs registered when posts are created
+3. **Comments** - Comment CIDs registered when comments are added
+
+**Atomic Pattern:**
+```solidity
+// In MessageContract.sol
+function recordMessage(..., bytes32 threadCID) external {
+  // Step 1: Register CID (reverts if fails)
+  contentRegistry.registerContent(threadCID, msg.sender, appId);
+  
+  // Step 2: Store message metadata (only if Step 1 succeeded)
+  messageStorage.createMessage(...);
+}
+```
+
+**Result:** Either both succeed or both fail - no orphaned CIDs or unverified content.
+
+### Security Model
+
+**On-Chain Verified Content** (`shouldVerifyOnChain: true`):
+- ✅ Secure - CID must be registered on-chain
+- ✅ Decentralized - No central authority needed
+- ✅ Tamper-proof - Blockchain immutability
+- 📝 Use for: Messages, Posts, Comments, Listings
+
+**Unverified Content** (`shouldVerifyOnChain: false`):
+- ⚠️ Trust-based - No on-chain verification
+- ⚠️ Vulnerable to spoofing without additional checks
+- 📝 Use for: Media files, test content, public data
+
 ## Development
 
 ```bash

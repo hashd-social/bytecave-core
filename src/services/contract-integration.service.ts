@@ -45,6 +45,15 @@ const INCENTIVES_ABI = [
   'event RewardsClaimed(bytes32 indexed nodeId, uint256 amount)'
 ];
 
+const CONTENT_REGISTRY_ABI = [
+  'function isContentRegistered(bytes32 cid) view returns (bool)',
+  'function getContentOwner(bytes32 cid) view returns (address)',
+  'function getContentAppId(bytes32 cid) view returns (bytes32)',
+  'function getContentRecord(bytes32 cid) view returns (tuple(address owner, bytes32 appId, uint256 timestamp))',
+  'event ContentRegistered(bytes32 indexed cid, address indexed owner, bytes32 indexed appId, uint256 timestamp)',
+  'event ContentDeleted(bytes32 indexed cid, address indexed owner)'
+];
+
 export interface NodeInfo {
   nodeId: string;
   owner: string;
@@ -70,6 +79,7 @@ export class ContractIntegrationService {
   private signer: ethers.Signer | null = null;
   private nodeRegistry: ethers.Contract | null = null;
   private incentives: ethers.Contract | null = null;
+  private contentRegistry: ethers.Contract | null = null;
 
   /**
    * Initialize contract integration
@@ -79,6 +89,7 @@ export class ContractIntegrationService {
     privateKey?: string;
     registryAddress: string;
     incentivesAddress?: string;
+    contentRegistryAddress?: string;
   }): Promise<void> {
     try {
       // Setup provider
@@ -105,9 +116,19 @@ export class ContractIntegrationService {
         );
       }
 
+      // Initialize content registry contract if provided
+      if (config.contentRegistryAddress) {
+        this.contentRegistry = new ethers.Contract(
+          config.contentRegistryAddress,
+          CONTENT_REGISTRY_ABI,
+          this.provider // Read-only, no signer needed
+        );
+      }
+
       logger.info('Contract integration initialized', {
         registry: config.registryAddress,
-        incentives: config.incentivesAddress || 'not configured'
+        incentives: config.incentivesAddress || 'not configured',
+        contentRegistry: config.contentRegistryAddress || 'not configured'
       });
     } catch (error: any) {
       logger.error('Failed to initialize contract integration', error);
@@ -653,6 +674,112 @@ export class ContractIntegrationService {
   async getSignerAddress(): Promise<string | null> {
     if (!this.signer) return null;
     return await this.signer.getAddress();
+  }
+
+  // ============================================
+  // CONTENT REGISTRY METHODS
+  // ============================================
+
+  /**
+   * Verify if a CID is registered on-chain
+   * Used during replication to verify content authenticity
+   */
+  async isContentRegistered(cid: string): Promise<boolean> {
+    if (!this.contentRegistry) {
+      logger.warn('[CONTRACT] ContentRegistry not configured - skipping CID verification');
+      return false;
+    }
+
+    try {
+      const isRegistered = await this.contentRegistry.isContentRegistered(cid);
+      return isRegistered;
+    } catch (error: any) {
+      logger.error('[CONTRACT] Failed to verify CID registration', { cid, error: error.message });
+      return false;
+    }
+  }
+
+  /**
+   * Get content record from ContentRegistry
+   */
+  async getContentRecord(cid: string): Promise<{ owner: string; appId: string; timestamp: bigint } | null> {
+    if (!this.contentRegistry) {
+      return null;
+    }
+
+    try {
+      const record = await this.contentRegistry.getContentRecord(cid);
+      return {
+        owner: record.owner,
+        appId: record.appId,
+        timestamp: record.timestamp
+      };
+    } catch (error: any) {
+      logger.error('[CONTRACT] Failed to get content record', { cid, error: error.message });
+      return null;
+    }
+  }
+
+  /**
+   * Verify content is registered in ContentRegistry and check app authorization
+   * Returns the appId if registered and authorized, null otherwise
+   */
+  async verifyContentRegistration(cid: string, allowedApps?: string[]): Promise<{ 
+    authorized: boolean; 
+    appId?: string; 
+    error?: string 
+  }> {
+    if (!this.contentRegistry) {
+      return { 
+        authorized: false, 
+        error: 'ContentRegistry not configured' 
+      };
+    }
+
+    try {
+      // Check if content is registered
+      const isRegistered = await this.isContentRegistered(cid);
+      
+      if (!isRegistered) {
+        return { 
+          authorized: false, 
+          error: 'Content not registered in ContentRegistry' 
+        };
+      }
+
+      // Get the content record to check appId
+      const record = await this.getContentRecord(cid);
+      
+      if (!record) {
+        return { 
+          authorized: false, 
+          error: 'Could not retrieve content record' 
+        };
+      }
+
+      // If allowedApps filter is set, verify appId is in the list
+      if (allowedApps && allowedApps.length > 0) {
+        if (!allowedApps.includes(record.appId)) {
+          return { 
+            authorized: false, 
+            appId: record.appId,
+            error: `App '${record.appId}' not in allowed list` 
+          };
+        }
+      }
+
+      // All checks passed
+      return { 
+        authorized: true, 
+        appId: record.appId 
+      };
+    } catch (error: any) {
+      logger.error('[CONTRACT] Content verification failed', { cid, error: error.message });
+      return { 
+        authorized: false, 
+        error: `Verification failed: ${error.message}` 
+      };
+    }
   }
 
   /**
