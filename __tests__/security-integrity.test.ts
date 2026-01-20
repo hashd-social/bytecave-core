@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Security Tests: Integrity Protection
+ * ByteCave - Security Tests: Integrity Protection
  * 
  * Tests for:
  * 1. Ciphertext integrity (CID verification)

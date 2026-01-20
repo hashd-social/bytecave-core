@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Proof Service
+ * ByteCave - Proof Service
  * 
  * Manages storage proof generation, storage, and retention (R4.7)
  */

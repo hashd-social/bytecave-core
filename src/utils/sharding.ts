@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Storage Sharding Utilities
+ * ByteCave - Storage Sharding Utilities
  * 
  * Implements Requirement 7: Storage Sharding (Horizontal Partitioning)
  * - Shard key calculation (R7.1)

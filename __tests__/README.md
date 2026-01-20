@@ -1,4 +1,4 @@
-# HASHD Vault Test Suite
+# ByteCave Test Suite
 
 Comprehensive test suite covering all vault requirements and functionality.
 

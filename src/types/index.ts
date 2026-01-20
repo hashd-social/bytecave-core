@@ -1,6 +1,23 @@
 /**
- * HASHD Vault - Type Definitions
+ * ByteCave - Type Definitions
  */
+
+/**
+ * Content type categories for application-level blob classification
+ */
+export type ContentType = 'messages' | 'posts' | 'media' | 'listings';
+
+/**
+ * Standardized metadata for blob replication
+ * All fields are required to ensure consistent replication behavior
+ */
+export interface ReplicationMetadata {
+  appId: string;              // Application identifier (e.g., 'hashd')
+  contentType: ContentType;   // Application-level content category
+  shouldVerifyOnChain: boolean; // Whether blob requires on-chain CID verification
+  sender: string;             // Address that stored this blob
+  timestamp: number;          // When blob was stored (Unix timestamp)
+}
 
 export interface BlobMetadata {
   cid: string;
@@ -13,11 +30,10 @@ export interface BlobMetadata {
   integrityHash?: string; // HMAC of critical fields to detect tampering
   // Application metadata (v2)
   appId?: string;        // keccak256(appName) - which app stored this
-  contentType?: string;  // Application-defined content type (message, post, etc)
+  contentType?: ContentType;  // Application-defined content type
+  shouldVerifyOnChain?: boolean; // Whether this blob requires on-chain verification for replication
   sender?: string;       // Address that stored this blob
   timestamp?: number;    // When blob was stored
-  // Additional metadata for queries
-  metadata?: Record<string, any>; // Flexible metadata for application use
   replication?: {
     source?: 'local' | 'replicated'; // Track if blob was stored locally or received via replication
     fromPeer?: string;
@@ -58,10 +74,10 @@ export interface ReplicateRequest {
   fromPeer: string;
   // Application metadata (passed from original store)
   appId?: string;
-  contentType?: string;
+  contentType?: ContentType;
+  shouldVerifyOnChain?: boolean;
   sender?: string;
   timestamp?: number;
-  metadata?: Record<string, any>;
 }
 
 export interface ReplicateResponse {
@@ -132,9 +148,6 @@ export interface BlockedContent {
   cids: string[];
 }
 
-// Content types that nodes can choose to store
-export type ContentType = 'messages' | 'posts' | 'media' | 'listings';
-
 // Content filter configuration
 export interface ContentFilterConfig {
   // Which content types to accept ('all' or array of types)
@@ -194,8 +207,7 @@ export interface Config {
   logLevel: string;
   corsOrigin: string[];
   // App filtering - nodes can choose which apps to store data for
-  allowedApps: string[]; // Array of app names (e.g., ['hashd', 'myapp']). Empty array = accept all apps
-  requireAppRegistry: boolean; // If true, reject storage requests if AppRegistry is not initialized
+  allowedApps: string[]; // Array of app names (e.g., ['hashd', 'myapp']). Empty array = accept all registered apps
 }
 
 export interface Metrics {

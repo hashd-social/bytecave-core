@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Replication Status Route
+ * ByteCave - Replication Status Route
  * GET /replication/:cid - Get replication status (R6.5)
  */
 

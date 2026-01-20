@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Replication Verification Utilities
+ * ByteCave - Replication Verification Utilities
  * 
  * Enhanced replication verification for GC (R8.7)
  * - Verify replicas are online

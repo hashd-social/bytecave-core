@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Reputation Routes
+ * ByteCave - Reputation Routes
  * 
  * Implements Requirement 5: Reputation API
  * - GET /reputation/score (R5.7)

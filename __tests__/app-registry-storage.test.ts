@@ -196,12 +196,9 @@ describe('AppRegistry Storage Integration', () => {
     });
 
     test('should validate signature includes appId and contentType', () => {
-      const signatureMessage = `HASHD Vault Storage Request
-Type: group_post
+      const signatureMessage = `ByteCave Storage Request for:
 Content Hash: 0xhash
 App ID: hashd
-Content Type: post
-Context: group123
 Timestamp: 1234567890
 Nonce: nonce123`;
       

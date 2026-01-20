@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Logging Utility
+ * ByteCave - Logging Utility
  */
 
 import { config } from '../config/index.js';

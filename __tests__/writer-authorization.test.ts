@@ -285,7 +285,7 @@ describe('Writer Authorization (Requirement 12)', () => {
       expect(result.rejectionType).toBe('blocklist');
     });
 
-    test('should allow prime key holders', () => {
+    test('should allow Genesis Key holders', () => {
       const rules: GuildPostingRules = {
         tier: 'prime_key',
         primeKeyHolders: ['0xAlice']

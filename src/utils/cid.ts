@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Content Identifier (CID) Utilities
+ * ByteCave - Content Identifier (CID) Utilities
  * 
  * Uses SHA-256 for deterministic content addressing
  */

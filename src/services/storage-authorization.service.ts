@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Storage Authorization Service (Numerical Sharding)
+ * ByteCave - Storage Authorization Service (Numerical Sharding)
  * 
  * Verifies authorization before accepting storage requests.
  * With numerical sharding, authorization is content-agnostic:
@@ -20,8 +20,9 @@ import {
 } from '../types/index.js';
 
 // Signature message format (v3 - numerical sharding, content-agnostic)
-const SIGNATURE_MESSAGE_TEMPLATE = `HASHD Vault Storage Request
+const SIGNATURE_MESSAGE_TEMPLATE = `ByteCave Storage Request for Content Hash
 Content Hash: {contentHash}
+App ID: {appId}
 Timestamp: {timestamp}
 Nonce: {nonce}`;
 
@@ -209,23 +210,12 @@ export class StorageAuthorizationService {
     }
 
     // 3. Verify sender is authorized for this appId (AppRegistry check)
+    // AppRegistry validation is optional - if not initialized, skip with warning
     const { appRegistryService } = await import('./app-registry.service.js');
     const { config } = await import('../config/index.js');
+    const hasAllowedAppsFilter = config.allowedApps && config.allowedApps.length > 0;
     
-    if (!appRegistryService.isInitialized()) {
-      // If AppRegistry is required but not initialized, reject the request
-      if (config.requireAppRegistry) {
-        logger.error('AppRegistry not initialized but is required by node config');
-        return {
-          authorized: false,
-          error: 'AppRegistry validation required but service not initialized',
-          details: {
-            requireAppRegistry: config.requireAppRegistry
-          }
-        };
-      }
-      logger.warn('AppRegistry not initialized, skipping appId validation (requireAppRegistry=false)');
-    } else {
+    if (hasAllowedAppsFilter && appRegistryService.isInitialized()) {
       // Verify the app is registered and sender is authorized
       const isAuthorized = await appRegistryService.isAuthorized(
         authorization.appId,
@@ -250,32 +240,12 @@ export class StorageAuthorizationService {
         appId: authorization.appId.slice(0, 16) + '...',
         sender: authorization.sender
       });
-    }
-    
-    // 3b. Check if this node accepts storage for this app (node-level filtering)
-    if (config.allowedApps.length > 0) {
-      // Extract app name from appId (format: "hashd" or full hash)
-      // For now, we'll use the appId directly for comparison
-      const appName = authorization.appId.toLowerCase();
-      const isAllowed = config.allowedApps.some(allowed => 
-        appName.includes(allowed.toLowerCase()) || allowed === '*'
-      );
-      
-      if (!isAllowed) {
-        logger.warn('App not in node allowedApps list', {
-          appId: authorization.appId,
-          allowedApps: config.allowedApps
-        });
-        return {
-          authorized: false,
-          error: 'This node does not accept storage for this app',
-          details: {
-            appId: authorization.appId,
-            allowedApps: config.allowedApps
-          }
-        };
-      }
-      logger.debug('✅ App allowed by node config', {
+    } else if (hasAllowedAppsFilter && !appRegistryService.isInitialized()) {
+      logger.warn('AppRegistry not initialized - skipping app authorization validation', {
+        appId: authorization.appId.slice(0, 16) + '...'
+      });
+    } else {
+      logger.debug('AppRegistry validation skipped (no allowedApps filter)', {
         appId: authorization.appId.slice(0, 16) + '...'
       });
     }
@@ -346,6 +316,7 @@ export class StorageAuthorizationService {
     try {
       const message = SIGNATURE_MESSAGE_TEMPLATE
         .replace('{contentHash}', authorization.contentHash)
+        .replace('{appId}', authorization.appId || '')
         .replace('{timestamp}', authorization.timestamp.toString())
         .replace('{nonce}', authorization.nonce);
 

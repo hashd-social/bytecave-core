@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Client-Side Proof Verification (R4.3)
+ * ByteCave - Client-Side Proof Verification (R4.3)
  * 
  * This module can be used by clients to verify storage proofs
  * WITHOUT relying on the node itself.

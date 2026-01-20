@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Cache Service
+ * ByteCave - Cache Service
  * 
  * Simple LRU cache for frequently accessed blobs
  */

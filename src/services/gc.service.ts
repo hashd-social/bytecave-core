@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Garbage Collection Service
+ * ByteCave - Garbage Collection Service
  * 
  * Implements Requirement 8: Garbage Collection & Retention Policies
  * - Safety checks (R8.1, R8.3)

@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Garbage Collection Routes
+ * ByteCave - Garbage Collection Routes
  * 
  * GET /gc/status - Get GC status (R8.6)
  * POST /admin/gc - Trigger GC manually (R8.5)

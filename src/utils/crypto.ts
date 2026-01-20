@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Crypto Utilities
+ * ByteCave - Crypto Utilities
  * 
  * Signature verification for feed events
  */

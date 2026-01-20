@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Status Route
+ * ByteCave - Status Route
  * GET /status - Node status and capacity (Requirement 2.5)
  */
 

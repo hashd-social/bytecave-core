@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Feed Service
+ * ByteCave - Feed Service
  * 
  * Implements Requirement 10: Encrypted Multi-Writer Feeds
  * - Feed management (R10.1)

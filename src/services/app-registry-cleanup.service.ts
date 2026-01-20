@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - App Registry Cleanup Service
+ * ByteCave - App Registry Cleanup Service
  * 
  * Handles cleanup of unauthorized blobs when REQUIRE_APP_REGISTRY changes from false to true
  */
@@ -10,7 +10,7 @@ import { storageService } from './storage.service.js';
 
 export class AppRegistryCleanupService {
   private initialized = false;
-  private lastRequireAppRegistry: boolean | null = null;
+  private lastAllowedApps: string[] | null = null;
 
   /**
    * Initialize the cleanup service and check for config changes
@@ -20,10 +20,9 @@ export class AppRegistryCleanupService {
 
     try {
       // Store the initial state
-      this.lastRequireAppRegistry = config.requireAppRegistry;
+      this.lastAllowedApps = config.allowedApps;
       
       logger.info('App registry cleanup service initialized', {
-        requireAppRegistry: config.requireAppRegistry,
         allowedApps: config.allowedApps
       });
 
@@ -37,7 +36,7 @@ export class AppRegistryCleanupService {
   }
 
   /**
-   * Check if config has changed and cleanup if needed
+   * Check if config has changed and trigger cleanup if needed
    * Should be called periodically or on config reload
    */
   async checkAndCleanup(): Promise<void> {
@@ -45,19 +44,22 @@ export class AppRegistryCleanupService {
       await this.initialize();
     }
 
-    const currentRequireAppRegistry = config.requireAppRegistry;
+    const currentAllowedApps = config.allowedApps;
 
-    // Check if REQUIRE_APP_REGISTRY changed from false to true
-    if (this.lastRequireAppRegistry === false && currentRequireAppRegistry === true) {
-      logger.warn('REQUIRE_APP_REGISTRY changed from false to true - starting cleanup of unauthorized blobs', {
-        allowedApps: config.allowedApps
+    // Check if allowedApps changed (became more restrictive)
+    const hasAllowedAppsFilter = currentAllowedApps && currentAllowedApps.length > 0;
+    const hadNoFilter = !this.lastAllowedApps || this.lastAllowedApps.length === 0;
+    
+    if (hadNoFilter && hasAllowedAppsFilter) {
+      logger.warn('Allowed apps filter enabled - starting cleanup of unauthorized blobs', {
+        allowedApps: currentAllowedApps
       });
 
       await this.cleanupUnauthorizedBlobs();
     }
 
     // Update the last known state
-    this.lastRequireAppRegistry = currentRequireAppRegistry;
+    this.lastAllowedApps = currentAllowedApps;
   }
 
   /**

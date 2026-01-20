@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Metrics Service
+ * ByteCave - Metrics Service
  * 
  * Tracks node performance metrics for reputation scoring
  */

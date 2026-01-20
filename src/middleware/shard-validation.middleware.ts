@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Shard Validation Middleware
+ * ByteCave - Shard Validation Middleware
  * 
  * Implements Requirement 7.5: Node Enforcement
  * Rejects blobs that don't belong to this node's shard assignment

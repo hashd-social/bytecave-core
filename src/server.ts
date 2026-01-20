@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Main Server
+ * ByteCave - Main Server
  * 
  * Decentralized storage node for HASHD protocol
  */
@@ -21,11 +21,9 @@ import { appRegistryCleanupService } from './services/app-registry-cleanup.servi
 import { versionCheckService } from './services/version-check.service.js';
 import { requestLogger } from './middleware/logging.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
-import { requireUpToDateVersion } from './middleware/version-check.middleware.js';
-import { storeHandler } from './routes/store.route.js';
 import { blobHandler } from './routes/blob.route.js';
-// REMOVED: replicate.route.js - insecure HTTP endpoint that bypassed authorization
-// Replication now only allowed via P2P protocols with peer verification
+// REMOVED: store.route.js and replicate.route.js - legacy HTTP endpoints
+// Storage now only via P2P protocols (/bytecave/store/1.0.0 and /bytecave/replicate/1.0.0)
 import { healthHandler } from './routes/health.route.js';
 import { listHandler } from './routes/list.route.js';
 import { statusHandler } from './routes/status.route.js';
@@ -45,7 +43,7 @@ import {
   replicationStatsHandler
 } from './routes/replication-status.route.js';
 import { shardsHandler } from './routes/shards.route.js';
-import { validateShardAssignment, validateShardForProof } from './middleware/shard-validation.middleware.js';
+import { validateShardForProof } from './middleware/shard-validation.middleware.js';
 import { gcStatusHandler, triggerGCHandler, forcePurgeHandler, deleteBlobHandler } from './routes/gc.route.js';
 import { 
   pinBlobHandler, 
@@ -141,11 +139,10 @@ app.disable('x-powered-by');
  * Routes with Rate Limiting
  */
 
-// Storage endpoints with shard validation (R7.5)
-// Only /store is allowed - requires on-chain authorization with appId validation
-app.post('/store', storageLimiter, requireUpToDateVersion, validateShardAssignment, storeHandler);
-// REMOVED: /replicate endpoint - was insecure, allowed bypassing authorization
-// Replication now only via P2P protocols (/bytecave/replicate/1.0.0) with peer verification
+// REMOVED: /store and /replicate HTTP endpoints - legacy, insecure
+// Storage now only via P2P protocols:
+// - /bytecave/store/1.0.0 (browser → node with authorization)
+// - /bytecave/replicate/1.0.0 (node → node with peer verification)
 
 // Read endpoints
 app.get('/blob/:cid', readLimiter, blobHandler);
@@ -217,7 +214,7 @@ app.get('/network/stats', readLimiter, networkStatsHandler);
 // Root endpoint
 app.get('/', (_req, res) => {
   res.json({
-    service: 'HASHD Vault',
+    service: 'ByteCave',
     version: '1.0.0',
     status: 'online',
     endpoints: {
@@ -247,7 +244,7 @@ app.use(errorHandler);
 
 async function initialize(): Promise<void> {
   try {
-    logger.info('Initializing HASHD Vault...');
+    logger.info('Initializing ByteCave...');
 
     // Validate configuration
     validateConfig();
@@ -430,11 +427,8 @@ async function initializeContractIntegration(): Promise<void> {
  * Only needed when using application-specific authorization (not numerical sharding)
  */
 async function initializeStorageAuthorization(): Promise<void> {
-  // Skip if using numerical sharding (REQUIRE_APP_REGISTRY=false)
-  if (!config.requireAppRegistry) {
-    logger.info('Storage authorization service skipped (using numerical sharding, REQUIRE_APP_REGISTRY=false)');
-    return;
-  }
+  // Storage authorization is always initialized
+  // App filtering is controlled via allowedApps list
 
   const rpcUrl = config.rpcUrl;
 
@@ -506,7 +500,7 @@ async function start(): Promise<void> {
     const nodePublicKey = ethers.keccak256(ethers.toUtf8Bytes(config.nodeId));
 
     const server = app.listen(config.port, () => {
-      logger.info('🚀 HASHD Vault v1.0.0');
+      logger.info('🚀 ByteCave v1.0.0');
       logger.info(`   Environment: ${config.nodeEnv}`);
       logger.info(`   Node ID: ${config.nodeId}`);
       logger.info(`   HTTP API Port: ${config.port} (local access only)`);

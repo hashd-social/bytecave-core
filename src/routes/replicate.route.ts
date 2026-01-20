@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Replicate Route
+ * ByteCave - Replicate Route
  * POST /replicate - Receive replicated blob from peer
  */
 
@@ -18,7 +18,7 @@ export async function replicateHandler(req: Request, res: Response): Promise<voi
     // Validate request
     validateReplicateRequest(req.body);
 
-    const { cid, ciphertext, mimeType, fromPeer, appId, contentType, sender, timestamp, metadata } = req.body as ReplicateRequest;
+    const { cid, ciphertext, mimeType, fromPeer, appId, contentType, sender, timestamp } = req.body as ReplicateRequest;
 
     logger.debug('Replication request received', { cid, fromPeer, contentType });
 
@@ -41,8 +41,7 @@ export async function replicateHandler(req: Request, res: Response): Promise<voi
         appId,
         contentType,
         sender,
-        timestamp,
-        metadata
+        timestamp
       });
       logger.info('Replicated blob stored', { cid, fromPeer, size: ciphertextBuffer.length, contentType });
     } else {

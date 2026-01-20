@@ -54,7 +54,6 @@ export interface PersistedConfig {
   // Security
   enableBlockedContent?: boolean;
   allowedApps?: string[];
-  requireAppRegistry?: boolean;
   blockedCids?: string[];
   blockedPeerIds?: string[];
   

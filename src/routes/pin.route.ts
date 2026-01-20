@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Pin Routes
+ * ByteCave - Pin Routes
  * 
  * Implements Requirement 9: Pinning & Data Permanence
  * - POST /pin/:cid - Pin a blob (R9.3)

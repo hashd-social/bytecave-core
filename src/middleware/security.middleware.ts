@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Security Middleware
+ * ByteCave - Security Middleware
  * 
  * Production security checks including TLS enforcement.
  */

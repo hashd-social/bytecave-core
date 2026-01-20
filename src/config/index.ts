@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Configuration Management
+ * ByteCave - Configuration Management
  */
 
 import dotenv from 'dotenv';
@@ -140,7 +140,6 @@ export const config: Config = {
   // Security - config.json takes precedence
   enableBlockedContent: getConfigValue(persistedConfig.enableBlockedContent, getEnvBoolean('ENABLE_BLOCKED_CONTENT', true)),
   allowedApps: getConfigValue(persistedConfig.allowedApps, getEnvArray('ALLOWED_APPS', ['hashd'])),
-  requireAppRegistry: getConfigValue(persistedConfig.requireAppRegistry, getEnvBoolean('REQUIRE_APP_REGISTRY', true)),
   
   // Performance - config.json takes precedence
   cacheSizeMB: getConfigValue(persistedConfig.cacheSizeMB, getEnvNumber('CACHE_SIZE_MB', 50)),
@@ -203,7 +202,6 @@ configManager.updateNodeConfig({
   // Security
   enableBlockedContent: config.enableBlockedContent,
   allowedApps: config.allowedApps,
-  requireAppRegistry: config.requireAppRegistry,
   
   // Performance
   cacheSizeMB: config.cacheSizeMB,

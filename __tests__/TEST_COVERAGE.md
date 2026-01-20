@@ -1,4 +1,4 @@
-# HASHD Vault - Test Coverage Summary
+# ByteCave - Test Coverage Summary
 
 ## Overall Test Results
 

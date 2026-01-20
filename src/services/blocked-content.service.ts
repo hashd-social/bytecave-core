@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Blocked Content Service
+ * ByteCave - Blocked Content Service
  * 
  * Manages CIDs that this node operator chooses not to store/serve.
  * This is a local preference, not network-wide moderation.

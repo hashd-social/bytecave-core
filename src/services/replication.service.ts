@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Replication Service
+ * ByteCave - Replication Service
  * 
  * Handles peer-to-peer blob replication using:
  * 1. Pure P2P via libp2p streams (preferred)
@@ -8,7 +8,7 @@
 import { config } from '../config/index.js';
 import { getReplicationFactor, updateReplicationFactor } from '../constants/replication.js';
 import { logger } from '../utils/logger.js';
-import { Peer } from '../types/index.js';
+import { Peer, ReplicationMetadata } from '../types/index.js';
 import { contractIntegrationService } from './contract-integration.service.js';
 import { storageService } from './storage.service.js';
 import { replicationManager } from './replication-manager.service.js';
@@ -20,14 +20,7 @@ interface RetryQueueItem {
   cid: string;
   ciphertext: Buffer;
   mimeType: string;
-  options?: {
-    appId?: string;
-    contentType?: string;
-    sender?: string;
-    timestamp?: number;
-    guildId?: string;
-    metadata?: Record<string, any>;
-  };
+  options?: Partial<ReplicationMetadata>;
   targetPeerId: string;
   attempts: number;
   nextRetryAt: number;
@@ -48,6 +41,9 @@ export class ReplicationService {
   private replicationInProgress: Set<string> = new Set(); // Track CIDs being replicated
   private readonly MAX_CONCURRENT_REPLICATIONS = 5; // Max concurrent replication operations
   private replicationQueue: Array<() => Promise<void>> = []; // Queue for rate-limited operations
+  
+  // Track known peer nodeIds to detect new registrations
+  private knownPeerNodeIds: Set<string> = new Set();
 
   /**
    * Initialize replication service
@@ -72,7 +68,77 @@ export class ReplicationService {
     // Start periodic replication health check
     this.startReplicationHealthCheck();
 
+    // Listen for new peer connections to trigger replication
+    this.setupPeerConnectionListener();
+
+    // Listen for node registration events to refresh peer list
+    this.setupNodeRegistrationListener();
+
     logger.info('Replication service initialized');
+  }
+
+  /**
+   * Set up listener for new peer connections to trigger replication
+   */
+  private setupPeerConnectionListener(): void {
+    p2pService.on('peer:connect', async (peerId: string) => {
+      logger.info('[REPLICATION] New peer connected, checking for under-replicated blobs', { 
+        peerId: peerId.slice(0, 16) + '...' 
+      });
+      
+      // Wait a bit for the peer to fully connect and announce capabilities
+      setTimeout(async () => {
+        try {
+          await this.checkReplicationHealth();
+        } catch (error: any) {
+          logger.warn('[REPLICATION] Failed to check replication health after peer connection', { 
+            error: error.message 
+          });
+        }
+      }, 5000); // 5 second delay
+    });
+  }
+
+  /**
+   * Set up listener for node registration events to refresh peer list and trigger replication
+   */
+  private setupNodeRegistrationListener(): void {
+    if (!contractIntegrationService.isInitialized()) {
+      logger.warn('[REPLICATION] Contract integration not initialized, NodeRegistered listener not set up');
+      return;
+    }
+
+    logger.info('[REPLICATION] Setting up NodeRegistered event listener');
+    contractIntegrationService.onNodeRegistered(async (nodeId: string, owner: string) => {
+      logger.info('[REPLICATION] New node registered on-chain, refreshing peer list', { 
+        nodeId: nodeId.slice(0, 16) + '...',
+        owner: owner.slice(0, 10) + '...'
+      });
+      
+      // Immediately refresh peer list from contract
+      try {
+        await this.loadPeersFromRegistry();
+        logger.info('[REPLICATION] Peer list refreshed after node registration');
+        
+        // Wait for P2P connections to establish, then trigger replication
+        setTimeout(async () => {
+          try {
+            // First, replicate existing blobs (pull from network)
+            await this.replicateExistingBlobs();
+            // Then check health to push any under-replicated blobs
+            await this.checkReplicationHealth();
+          } catch (error: any) {
+            logger.warn('[REPLICATION] Failed to trigger replication after node registration', { 
+              error: error.message 
+            });
+          }
+        }, 15000); // 15 second delay to match startup behavior
+      } catch (error: any) {
+        logger.error('[REPLICATION] Failed to refresh peer list after node registration', { 
+          error: error.message 
+        });
+      }
+    });
   }
 
   /**
@@ -157,6 +223,8 @@ export class ReplicationService {
             cid: blob.cid,
             size: blobData.ciphertext.length,
             appId: blob.appId,
+            contentType: blob.contentType,
+            shouldVerifyOnChain: blob.shouldVerifyOnChain,
             replicationSource: blob.replication?.source || 'legacy'
           });
 
@@ -165,8 +233,9 @@ export class ReplicationService {
             blobData.ciphertext,
             blob.mimeType,
             {
-              appId: blob.appId,
+              appId: blob.appId || 'hashd', // Default to 'hashd' for legacy blobs
               contentType: blob.contentType,
+              shouldVerifyOnChain: blob.shouldVerifyOnChain,
               sender: blob.sender,
               timestamp: blob.timestamp
             }
@@ -284,6 +353,7 @@ export class ReplicationService {
               {
                 appId: blob.appId,
                 contentType: blob.contentType,
+                shouldVerifyOnChain: blob.shouldVerifyOnChain,
                 sender: blob.sender,
                 timestamp: blob.timestamp
               }
@@ -318,14 +388,7 @@ export class ReplicationService {
     ciphertext: Buffer,
     mimeType: string,
     targetPeerId: string,
-    options?: {
-      appId?: string;
-      contentType?: string;
-      sender?: string;
-      timestamp?: number;
-      guildId?: string;
-      metadata?: Record<string, any>;
-    },
+    options?: Partial<ReplicationMetadata>,
     currentAttempts: number = 0
   ): void {
     const queueKey = `${cid}-${targetPeerId}`;
@@ -441,14 +504,7 @@ export class ReplicationService {
     cid: string,
     ciphertext: Buffer,
     mimeType: string,
-    options?: { 
-      appId?: string;
-      contentType?: string; 
-      sender?: string;
-      timestamp?: number;
-      guildId?: string;
-      metadata?: Record<string, any>;
-    }
+    options?: Partial<ReplicationMetadata>
   ): Promise<string[]> {
     if (!config.replicationEnabled) {
       return [];
@@ -487,18 +543,8 @@ export class ReplicationService {
     cid: string,
     ciphertext: Buffer,
     mimeType: string,
-    options?: { 
-      appId?: string;
-      contentType?: string; 
-      sender?: string;
-      timestamp?: number;
-      guildId?: string;
-      metadata?: Record<string, any>;
-    }
+    options?: Partial<ReplicationMetadata>
   ): Promise<string[]> {
-    // Mark as in progress
-    this.replicationInProgress.add(cid);
-
     try {
       logger.info('[REPLICATION] Starting distributed consensus replication', { cid });
     
@@ -676,13 +722,7 @@ export class ReplicationService {
     cid: string,
     ciphertext: Buffer,
     mimeType: string,
-    options?: { 
-      appId?: string;
-      contentType?: string;
-      sender?: string;
-      timestamp?: number;
-      metadata?: Record<string, any>;
-    }
+    options?: Partial<ReplicationMetadata>
   ): Promise<boolean> {
     const startTime = Date.now();
 
@@ -693,7 +733,11 @@ export class ReplicationService {
       nodeId: peer.nodeId,
       peerId: p2pPeerId,
       cid,
-      hasPeerId: !!p2pPeerId
+      hasPeerId: !!p2pPeerId,
+      hasOptions: !!options,
+      optionsAppId: options?.appId,
+      optionsContentType: options?.contentType,
+      optionsShouldVerifyOnChain: options?.shouldVerifyOnChain
     });
     
     if (!p2pPeerId) {
@@ -858,7 +902,7 @@ export class ReplicationService {
             peerId: peerId
           } as Peer & { peerId: string };
         } catch (error: any) {
-          logger.debug('Failed to get health from P2P peer', { peerId: peerId.slice(0, 12), error: error.message });
+          // logger.debug('Failed to get health from P2P peer', { peerId: peerId.slice(0, 12), error: error.message });
           return null;
         }
       });
@@ -966,6 +1010,36 @@ export class ReplicationService {
       const results = await Promise.all(peerPromises);
       this.peers = results.filter(p => p !== null) as any[];
 
+      // Detect new peer registrations
+      const currentPeerNodeIds = new Set(this.peers.map((p: any) => p.nodeId));
+      const newPeerNodeIds = [...currentPeerNodeIds].filter(nodeId => !this.knownPeerNodeIds.has(nodeId));
+      
+      if (newPeerNodeIds.length > 0) {
+        logger.info('[REPLICATION] Detected new peer registrations', {
+          newPeers: newPeerNodeIds.length,
+          nodeIds: newPeerNodeIds.map(id => id.slice(0, 16) + '...')
+        });
+        
+        // Update known peers
+        this.knownPeerNodeIds = currentPeerNodeIds;
+        
+        // Trigger replication for new peers after delay for P2P connection
+        setTimeout(async () => {
+          try {
+            logger.info('[REPLICATION] Triggering replication for newly registered peers');
+            await this.replicateExistingBlobs();
+            await this.checkReplicationHealth();
+          } catch (error: any) {
+            logger.warn('[REPLICATION] Failed to replicate to new peers', { 
+              error: error.message 
+            });
+          }
+        }, 15000); // 15 second delay to allow P2P connections
+      } else {
+        // Update known peers even if no new ones
+        this.knownPeerNodeIds = currentPeerNodeIds;
+      }
+
       logger.info('[REPLICATION] Peers loaded from registry', {
         total: this.peers.length,
         peers: this.peers.map((p: any) => p.peerId || 'unknown')
@@ -1017,11 +1091,18 @@ export class ReplicationService {
           // Get the blob data
           const blobData = await storageService.getBlob(blob.cid);
           
-          // Replicate to all peers
+          // Replicate to all peers with metadata
           const results = await this.replicateToAll(
             blob.cid,
             blobData.ciphertext,
-            blob.mimeType
+            blob.mimeType,
+            {
+              appId: blob.appId,
+              contentType: blob.contentType,
+              shouldVerifyOnChain: blob.shouldVerifyOnChain,
+              sender: blob.sender,
+              timestamp: blob.timestamp
+            }
           );
 
           if (results.length > 0) {

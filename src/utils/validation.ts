@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Validation Utilities
+ * ByteCave - Validation Utilities
  */
 
 import { InvalidRequestError, PayloadTooLargeError } from '../types/index.js';

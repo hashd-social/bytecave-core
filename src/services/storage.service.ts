@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Storage Service
+ * ByteCave - Storage Service
  * 
  * Handles blob and metadata storage using filesystem
  */
@@ -11,7 +11,7 @@ import { promisify } from 'util';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { generateMetadataIntegrityHash, verifyMetadataIntegrity } from '../utils/cid.js';
-import { BlobMetadata, BlobNotFoundError, StorageFullError } from '../types/index.js';
+import { BlobMetadata, BlobNotFoundError, StorageFullError, ContentType } from '../types/index.js';
 import { cacheService } from './cache.service.js';
 
 const gzip = promisify(zlib.gzip);
@@ -130,6 +130,7 @@ export class StorageService {
       fromPeer?: string;
       appId?: string;
       contentType?: string;
+      shouldVerifyOnChain?: boolean;
       sender?: string;
       timestamp?: number;
       metadata?: Record<string, any>;
@@ -191,10 +192,10 @@ export class StorageService {
         integrityHash: generateMetadataIntegrityHash(cid, ciphertext.length, mimeType, createdAt, false),
         // Application metadata (v2)
         appId: options?.appId,
-        contentType: options?.contentType,
+        contentType: options?.contentType as ContentType | undefined,
+        shouldVerifyOnChain: options?.shouldVerifyOnChain,
         sender: options?.sender,
         timestamp: options?.timestamp,
-        metadata: options?.metadata,
         replication: options?.fromPeer ? {
           source: options.replicationSource || 'replicated',
           fromPeer: options.fromPeer,

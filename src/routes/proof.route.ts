@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Proof Route
+ * ByteCave - Proof Route
  * POST /proofs/generate - Generate storage proof (R4.2)
  */
 

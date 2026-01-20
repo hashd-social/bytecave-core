@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Error Handling Middleware
+ * ByteCave - Error Handling Middleware
  */
 
 import { Request, Response, NextFunction } from 'express';

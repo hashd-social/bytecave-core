@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Feed Routes
+ * ByteCave - Feed Routes
  * 
  * Implements Requirement 10: Encrypted Multi-Writer Feeds
  * - GET /feed/:feedId - Get feed metadata and events (R10.8)

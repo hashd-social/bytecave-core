@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Rate Limiting Middleware
+ * ByteCave - Rate Limiting Middleware
  * 
  * Protects against DOS attacks by limiting request rates per IP.
  * Different limits for different endpoint types.

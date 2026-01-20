@@ -1,5 +1,5 @@
 /**
- * Quick local test script for HASHD Vault + Contracts
+ * Quick local test script for ByteCave + Contracts
  * 
  * Prerequisites:
  * 1. Start hardhat node: cd hardhat && yarn hardhat node
@@ -31,7 +31,7 @@ function log(emoji: string, message: string, data?: any) {
 
 async function testLocalSetup() {
   console.log('\n' + '='.repeat(60));
-  console.log('🧪 HASHD VAULT - LOCAL TEST SUITE');
+  console.log('🧪 ByteCave - LOCAL TEST SUITE');
   console.log('='.repeat(60) + '\n');
 
   try {

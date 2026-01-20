@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Reputation Service
+ * ByteCave - Reputation Service
  * 
  * Implements Requirement 5: Node Reputation & Reliability Scoring
  * - Event tracking (R5.1)

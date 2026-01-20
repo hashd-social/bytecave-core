@@ -1,5 +1,5 @@
 /**
- * Integration Tests for HASHD Vault
+ * Integration Tests for ByteCave
  * 
  * Tests end-to-end workflows combining multiple components
  */
@@ -13,7 +13,7 @@ import { StorageProof } from '../src/types/index.js';
 describe('End-to-End Blob Storage Workflow', () => {
   test('should complete full blob storage workflow', () => {
     // 1. Client encrypts and encodes blob
-    const plaintext = 'Hello, HASHD Vault!';
+    const plaintext = 'Hello, ByteCave!';
     const ciphertext = Buffer.from(plaintext); // In reality, this would be encrypted
     const base64Ciphertext = ciphertext.toString('base64');
     

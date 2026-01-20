@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Logging Middleware
+ * ByteCave - Logging Middleware
  */
 
 import { Request, Response, NextFunction } from 'express';

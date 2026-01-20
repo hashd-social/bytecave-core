@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Network Stats Route
+ * ByteCave - Network Stats Route
  * 
  * GET /network/stats - Returns network-wide node statistics
  * Used by frontend to select optimal vault nodes

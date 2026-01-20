@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Deterministic Node Selection
+ * ByteCave - Deterministic Node Selection
  * 
  * Implements Requirement 6.2: Deterministic node selection for replication
  * 

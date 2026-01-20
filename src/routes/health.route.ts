@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Health Route
+ * ByteCave - Health Route
  * GET /health - Node health and metrics
  */
 

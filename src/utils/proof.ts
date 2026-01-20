@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Storage Proof Utilities
+ * ByteCave - Storage Proof Utilities
  * 
  * Implements Requirement 4: Storage Proofs
  * - Challenge generation (R4.1)

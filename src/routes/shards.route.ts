@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Shards Route
+ * ByteCave - Shards Route
  * GET /shards - Get node's shard assignment (R7.6)
  */
 

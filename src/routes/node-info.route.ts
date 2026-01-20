@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Node Info Route
+ * ByteCave - Node Info Route
  * 
  * Implements R11.1b: Node Self-Reported Metadata
  */

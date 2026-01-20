@@ -15,6 +15,7 @@ import { storageService } from './storage.service.js';
 import { metricsService } from './metrics.service.js';
 import { p2pService } from './p2p.service.js';
 import { config } from '../config/index.js';
+import { ContentType } from '../types/index.js';
 
 // Protocol identifiers
 export const PROTOCOL_REPLICATE = '/bytecave/replicate/1.0.0';
@@ -31,10 +32,10 @@ interface ReplicateRequest {
   mimeType: string;
   ciphertext: string; // base64 encoded
   appId?: string;
-  contentType?: string;
+  contentType?: ContentType;
+  shouldVerifyOnChain?: boolean; // If true, receiving node should verify CID exists on-chain
   sender?: string;
   timestamp?: number;
-  metadata?: Record<string, any>;
   authorization?: any; // For browser-to-node storage with signed authorization
 }
 
@@ -168,6 +169,9 @@ class P2PProtocolsService {
     logger.debug('Handling replicate request', { from: remotePeer });
 
     try {
+      // Import config once at the top
+      const { config } = await import('../config/index.js');
+      
       // SECURITY CHECK 1: Verify peer is not blocked
       const { blockedContentService } = await import('./blocked-content.service.js');
       if (await blockedContentService.isPeerBlocked(remotePeer)) {
@@ -218,7 +222,23 @@ class P2PProtocolsService {
         return;
       }
 
-      // SECURITY CHECK 3: Verify CID is not blocked
+      // SECURITY CHECK 3: Validate file size (5MB limit)
+      const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB in bytes
+      const ciphertextSize = Buffer.from(request.ciphertext, 'base64').length;
+      if (ciphertextSize > MAX_FILE_SIZE) {
+        const sizeMB = (ciphertextSize / (1024 * 1024)).toFixed(2);
+        logger.warn(`Replication rejected: File size (${sizeMB}MB) exceeds maximum allowed size of 5MB`, { 
+          cid: request.cid, 
+          from: remotePeer 
+        });
+        await this.writeMessage(stream, { 
+          success: false, 
+          error: `File size (${sizeMB}MB) exceeds maximum allowed size of 5MB` 
+        });
+        return;
+      }
+
+      // SECURITY CHECK 4: Verify CID is not blocked
       if (await blockedContentService.isBlocked(request.cid)) {
         logger.warn('Replication rejected: CID is blocked', { cid: request.cid, from: remotePeer });
         await this.writeMessage(stream, { success: false, error: 'Content blocked' });
@@ -237,12 +257,12 @@ class P2PProtocolsService {
         return;
       }
 
-      // SECURITY CHECK 5: Verify app authorization when requireAppRegistry is enabled
-      const { config } = await import('../config/index.js');
-      const isMediaContent = request.contentType === 'media';
-      const requireAppRegistry = config.requireAppRegistry;
+      // SECURITY CHECK 5: Verify app authorization based on allowedApps list
+      // If allowedApps is set (non-empty), validate against it
+      // If allowedApps is empty, accept all registered apps
+      const hasAllowedAppsFilter = config.allowedApps && config.allowedApps.length > 0;
       
-      if (requireAppRegistry) {
+      if (hasAllowedAppsFilter) {
         // Check if appId is provided and is in allowed apps list
         if (!request.appId) {
           logger.warn('Replication rejected: No appId provided', { 
@@ -251,7 +271,7 @@ class P2PProtocolsService {
           });
           await this.writeMessage(stream, { 
             success: false, 
-            error: 'App ID required when app registry is enabled' 
+            error: 'App ID required (node has app filter enabled)' 
           });
           return;
         }
@@ -275,8 +295,10 @@ class P2PProtocolsService {
           appId: request.appId 
         });
         
-        // For non-media content: verify CID exists on-chain in authorized contracts
-        if (!isMediaContent) {
+        // SECURITY CHECK 6: On-chain verification (if requested by sender)
+        // If shouldVerifyOnChain is true, verify CID exists on-chain in authorized contracts
+        // This gives nodes flexibility to decide verification policy
+        if (request.shouldVerifyOnChain) {
           const { storageAuthorizationService } = await import('./storage-authorization.service.js');
           const onChainVerification = await storageAuthorizationService.verifyCIDOnChain(request.cid);
           
@@ -284,7 +306,8 @@ class P2PProtocolsService {
             logger.warn('Replication rejected: CID not found on-chain', { 
               cid: request.cid, 
               from: remotePeer,
-              error: onChainVerification.error
+              error: onChainVerification.error,
+              shouldVerifyOnChain: request.shouldVerifyOnChain
             });
             await this.writeMessage(stream, { 
               success: false, 
@@ -292,9 +315,14 @@ class P2PProtocolsService {
             });
             return;
           }
+          
+          logger.debug('On-chain verification passed', { 
+            cid: request.cid 
+          });
         }
         
         // For media: verify sender was provided
+        const isMediaContent = request.contentType === 'media';
         if (isMediaContent && !request.sender) {
           logger.warn('Replication rejected: Media content missing sender', { 
             cid: request.cid, 
@@ -321,9 +349,9 @@ class P2PProtocolsService {
       await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
         appId: request.appId,
         contentType: request.contentType,
+        shouldVerifyOnChain: request.shouldVerifyOnChain,
         sender: request.sender,
         timestamp: request.timestamp,
-        metadata: request.metadata,
         fromPeer: remotePeer,
         replicationSource: 'replicated' // Mark as received via replication
       });
@@ -372,6 +400,19 @@ class P2PProtocolsService {
       if (!request || !request.cid || !request.ciphertext) {
         console.log('[P2P Store] Invalid request - missing required fields');
         await this.writeMessage(stream, { success: false, error: 'Invalid request' });
+        return;
+      }
+
+      // Validate file size (5MB limit)
+      const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB in bytes
+      const ciphertextSize = Buffer.from(request.ciphertext, 'base64').length;
+      if (ciphertextSize > MAX_FILE_SIZE) {
+        const sizeMB = (ciphertextSize / (1024 * 1024)).toFixed(2);
+        console.log(`[P2P Store] File size (${sizeMB}MB) exceeds maximum allowed size of 5MB`);
+        await this.writeMessage(stream, { 
+          success: false, 
+          error: `File size (${sizeMB}MB) exceeds maximum allowed size of 5MB` 
+        });
         return;
       }
 
@@ -454,41 +495,56 @@ class P2PProtocolsService {
         return;
       }
 
-      // Verify authorization only if using application-specific authorization (not numerical sharding)
+      // Import config for app filtering
       const { config } = await import('../config/index.js');
-      if (config.requireAppRegistry) {
-        if (request.authorization) {
-          const { storageAuthorizationService } = await import('./storage-authorization.service.js');
-          
-          // Verify the authorization signature
-          const result = await storageAuthorizationService.verifyAuthorization(
-            request.authorization,
-            request.authorization.contentHash
-          );
+      const hasAllowedAppsFilter = config.allowedApps && config.allowedApps.length > 0;
+      
+      // Verify authorization (always required for browser storage)
+      if (request.authorization) {
+        const { storageAuthorizationService } = await import('./storage-authorization.service.js');
+        
+        // Verify the authorization signature
+        const result = await storageAuthorizationService.verifyAuthorization(
+          request.authorization,
+          request.authorization.contentHash
+        );
 
-          if (!result.authorized) {
-            logger.warn('Store rejected: Invalid authorization signature', { 
-              cid: request.cid,
-              sender: request.authorization.sender,
-              reason: result.error 
-            });
-            await this.writeMessage(stream, { success: false, error: result.error || 'Invalid authorization' });
-            return;
-          }
-
-          logger.debug('Browser storage authorization verified', { 
-            cid: request.cid, 
-            sender: request.authorization.sender 
+        if (!result.authorized) {
+          logger.warn('Store rejected: Invalid authorization signature', { 
+            cid: request.cid,
+            sender: request.authorization.sender,
+            reason: result.error 
           });
-        } else {
-          // No authorization provided - reject
-          logger.warn('Store rejected: No authorization provided', { cid: request.cid });
-          await this.writeMessage(stream, { success: false, error: 'Authorization required' });
+          await this.writeMessage(stream, { success: false, error: result.error || 'Invalid authorization' });
           return;
         }
+
+        // If node has app filter, verify appId is in allowed list
+        if (hasAllowedAppsFilter && request.appId) {
+          if (!config.allowedApps.includes(request.appId)) {
+            logger.warn('Store rejected: App not in allowed list', { 
+              cid: request.cid,
+              appId: request.appId,
+              allowedApps: config.allowedApps
+            });
+            await this.writeMessage(stream, { 
+              success: false, 
+              error: `App '${request.appId}' not authorized on this node` 
+            });
+            return;
+          }
+        }
+
+        logger.debug('Browser storage authorization verified', { 
+          cid: request.cid, 
+          sender: request.authorization.sender,
+          appId: request.appId 
+        });
       } else {
-        // Using numerical sharding - skip authorization check
-        logger.debug('Skipping authorization check (numerical sharding mode)', { cid: request.cid });
+        // No authorization provided - reject
+        logger.warn('Store rejected: No authorization provided', { cid: request.cid });
+        await this.writeMessage(stream, { success: false, error: 'Authorization required' });
+        return;
       }
 
       // Check if we already have this blob
@@ -505,10 +561,11 @@ class P2PProtocolsService {
       await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
         appId: request.appId,
         contentType: request.contentType,
+        shouldVerifyOnChain: request.shouldVerifyOnChain,
         sender: request.authorization?.sender,
-        timestamp: request.authorization?.timestamp,
-        metadata: request.metadata,
-        fromPeer: remotePeer
+        timestamp: request.authorization?.timestamp
+        // Note: fromPeer is NOT set for browser storage - this is direct storage, not replication
+        // fromPeer is only used for node-to-node replication via handleReplicate
       });
 
       console.log('[P2P Store] Blob stored successfully, CID:', request.cid);
@@ -521,9 +578,14 @@ class P2PProtocolsService {
       console.log('[P2P Store] Triggering replication for CID:', request.cid);
       
       // Trigger replication to other nodes (async, don't wait)
+      // shouldVerifyOnChain comes from the request (set by client)
       const { replicationService } = await import('./replication.service.js');
       replicationService.replicateToAll(request.cid, ciphertext, request.mimeType, {
-        contentType: request.contentType
+        appId: request.appId,
+        contentType: request.contentType as ContentType,
+        shouldVerifyOnChain: request.shouldVerifyOnChain,
+        sender: request.authorization?.sender,
+        timestamp: request.authorization?.timestamp
       }).then((results) => {
         console.log('[P2P Store] Replication completed:', results.length, 'successful replications');
       }).catch((err: any) => {
@@ -816,6 +878,7 @@ class P2PProtocolsService {
     options?: { 
       appId?: string;
       contentType?: string;
+      shouldVerifyOnChain?: boolean;
       sender?: string;
       timestamp?: number;
       metadata?: Record<string, any>;
@@ -858,11 +921,20 @@ class P2PProtocolsService {
         mimeType,
         ciphertext: ciphertext.toString('base64'),
         appId: options?.appId,
-        contentType: options?.contentType,
+        contentType: options?.contentType as ContentType | undefined,
+        shouldVerifyOnChain: options?.shouldVerifyOnChain,
         sender: options?.sender,
-        timestamp: options?.timestamp,
-        metadata: options?.metadata
+        timestamp: options?.timestamp
       };
+
+      logger.info('[P2P-PROTOCOLS] Replication request details', {
+        cid,
+        appId: request.appId,
+        contentType: request.contentType,
+        shouldVerifyOnChain: request.shouldVerifyOnChain,
+        hasOptions: !!options,
+        optionsAppId: options?.appId
+      });
 
       await this.writeMessage(stream, request);
       logger.info('[P2P-PROTOCOLS] Request sent, waiting for response', {

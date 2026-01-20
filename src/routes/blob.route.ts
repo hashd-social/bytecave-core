@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Blob Route
+ * ByteCave - Blob Route
  * GET /blob/:cid - Retrieve stored blob
  */
 

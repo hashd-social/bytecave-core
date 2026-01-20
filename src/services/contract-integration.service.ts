@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Contract Integration Service
+ * ByteCave - Contract Integration Service
  * 
  * Bridges vault services with on-chain smart contracts:
  * - VaultNodeRegistry (node registration & discovery)
@@ -659,11 +659,20 @@ export class ContractIntegrationService {
    * Listen for node registration events
    */
   onNodeRegistered(callback: (nodeId: string, owner: string) => void): void {
-    if (!this.nodeRegistry) return;
+    if (!this.nodeRegistry) {
+      logger.warn('[CONTRACT] Cannot set up NodeRegistered listener - nodeRegistry not initialized');
+      return;
+    }
 
+    logger.info('[CONTRACT] Setting up NodeRegistered event listener on contract');
     this.nodeRegistry.on('NodeRegistered', (nodeId, owner) => {
+      logger.info('[CONTRACT] NodeRegistered event received from blockchain', {
+        nodeId: nodeId.slice(0, 16) + '...',
+        owner: owner.slice(0, 10) + '...'
+      });
       callback(nodeId, owner);
     });
+    logger.info('[CONTRACT] NodeRegistered listener attached successfully');
   }
 
   /**

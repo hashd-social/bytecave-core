@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - List Route
+ * ByteCave - List Route
  * GET /blobs - List all stored blobs
  */
 

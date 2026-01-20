@@ -1,5 +1,5 @@
 /**
- * HASHD Vault - Replication Manager Service
+ * ByteCave - Replication Manager Service
  * 
  * Implements Requirement 6: Replication Factor Enforcement
  * - Deterministic node selection (R6.2)
