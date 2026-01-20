@@ -3,17 +3,11 @@
  */
 
 /**
- * Content type categories for application-level blob classification
- */
-export type ContentType = 'messages' | 'posts' | 'media' | 'listings';
-
-/**
  * Standardized metadata for blob replication
  * All fields are required to ensure consistent replication behavior
  */
 export interface ReplicationMetadata {
   appId: string;              // Application identifier (e.g., 'hashd')
-  contentType: ContentType;   // Application-level content category
   shouldVerifyOnChain: boolean; // Whether blob requires on-chain CID verification
   sender: string;             // Address that stored this blob
   timestamp: number;          // When blob was stored (Unix timestamp)
@@ -28,9 +22,7 @@ export interface BlobMetadata {
   pinned?: boolean; // Never delete if true (Requirement 9)
   compressed?: boolean; // Whether blob is compressed with gzip
   integrityHash?: string; // HMAC of critical fields to detect tampering
-  // Application metadata (v2)
   appId?: string;        // keccak256(appName) - which app stored this
-  contentType?: ContentType;  // Application-defined content type
   shouldVerifyOnChain?: boolean; // Whether this blob requires on-chain verification for replication
   sender?: string;       // Address that stored this blob
   timestamp?: number;    // When blob was stored
@@ -74,7 +66,6 @@ export interface ReplicateRequest {
   fromPeer: string;
   // Application metadata (passed from original store)
   appId?: string;
-  contentType?: ContentType;
   shouldVerifyOnChain?: boolean;
   sender?: string;
   timestamp?: number;
@@ -150,8 +141,8 @@ export interface BlockedContent {
 
 // Content filter configuration
 export interface ContentFilterConfig {
-  // Which content types to accept ('all' or array of types)
-  types: 'all' | ContentType[];
+  // Which MIME types to accept ('all' or array of MIME types)
+  types: 'all' | string[];
   // Allowlist: only accept content for these guild/group IDs (token IDs)
   // 'all' = accept all guilds (default)
   allowedGuilds: 'all' | string[];

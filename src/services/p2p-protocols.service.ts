@@ -15,7 +15,6 @@ import { storageService } from './storage.service.js';
 import { metricsService } from './metrics.service.js';
 import { p2pService } from './p2p.service.js';
 import { config } from '../config/index.js';
-import { ContentType } from '../types/index.js';
 
 // Protocol identifiers
 export const PROTOCOL_REPLICATE = '/bytecave/replicate/1.0.0';
@@ -32,7 +31,6 @@ interface ReplicateRequest {
   mimeType: string;
   ciphertext: string; // base64 encoded
   appId?: string;
-  contentType?: ContentType;
   shouldVerifyOnChain?: boolean; // If true, receiving node should verify CID exists on-chain
   sender?: string;
   timestamp?: number;
@@ -322,15 +320,14 @@ class P2PProtocolsService {
         }
         
         // For media: verify sender was provided
-        const isMediaContent = request.contentType === 'media';
-        if (isMediaContent && !request.sender) {
-          logger.warn('Replication rejected: Media content missing sender', { 
+        if (!request.sender) {
+          logger.warn('Replication rejected: Missing sender', { 
             cid: request.cid, 
             from: remotePeer
           });
           await this.writeMessage(stream, { 
             success: false, 
-            error: 'Media content requires sender metadata' 
+            error: 'Missing sender metadata' 
           });
           return;
         }
@@ -348,7 +345,6 @@ class P2PProtocolsService {
       // Mark as 'replicated' so this node doesn't re-replicate it
       await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
         appId: request.appId,
-        contentType: request.contentType,
         shouldVerifyOnChain: request.shouldVerifyOnChain,
         sender: request.sender,
         timestamp: request.timestamp,
@@ -359,7 +355,6 @@ class P2PProtocolsService {
       logger.info('Blob replicated via P2P - all security checks passed', { 
         cid: request.cid, 
         from: remotePeer,
-        contentType: request.contentType,
         sender: request.sender
       });
       await this.writeMessage(stream, { success: true });
@@ -560,7 +555,6 @@ class P2PProtocolsService {
       const ciphertext = Buffer.from(request.ciphertext, 'base64');
       await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
         appId: request.appId,
-        contentType: request.contentType,
         shouldVerifyOnChain: request.shouldVerifyOnChain,
         sender: request.authorization?.sender,
         timestamp: request.authorization?.timestamp
@@ -582,7 +576,6 @@ class P2PProtocolsService {
       const { replicationService } = await import('./replication.service.js');
       replicationService.replicateToAll(request.cid, ciphertext, request.mimeType, {
         appId: request.appId,
-        contentType: request.contentType as ContentType,
         shouldVerifyOnChain: request.shouldVerifyOnChain,
         sender: request.authorization?.sender,
         timestamp: request.authorization?.timestamp
@@ -877,7 +870,6 @@ class P2PProtocolsService {
     mimeType: string,
     options?: { 
       appId?: string;
-      contentType?: string;
       shouldVerifyOnChain?: boolean;
       sender?: string;
       timestamp?: number;
@@ -921,7 +913,6 @@ class P2PProtocolsService {
         mimeType,
         ciphertext: ciphertext.toString('base64'),
         appId: options?.appId,
-        contentType: options?.contentType as ContentType | undefined,
         shouldVerifyOnChain: options?.shouldVerifyOnChain,
         sender: options?.sender,
         timestamp: options?.timestamp
@@ -930,7 +921,6 @@ class P2PProtocolsService {
       logger.info('[P2P-PROTOCOLS] Replication request details', {
         cid,
         appId: request.appId,
-        contentType: request.contentType,
         shouldVerifyOnChain: request.shouldVerifyOnChain,
         hasOptions: !!options,
         optionsAppId: options?.appId

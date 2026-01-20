@@ -197,14 +197,13 @@ export class StorageAuthorizationService {
       };
     }
 
-    // 2. Verify appId and contentType are present (v2 requirement)
-    if (!authorization.appId || !authorization.contentType) {
+    // 2. Verify appId is present (v2 requirement)
+    if (!authorization.appId) {
       return {
         authorized: false,
-        error: 'appId and contentType are required',
+        error: 'appId is required',
         details: {
-          hasAppId: !!authorization.appId,
-          hasContentType: !!authorization.contentType
+          hasAppId: !!authorization.appId
         }
       };
     }

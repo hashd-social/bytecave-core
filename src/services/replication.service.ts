@@ -223,7 +223,6 @@ export class ReplicationService {
             cid: blob.cid,
             size: blobData.ciphertext.length,
             appId: blob.appId,
-            contentType: blob.contentType,
             shouldVerifyOnChain: blob.shouldVerifyOnChain,
             replicationSource: blob.replication?.source || 'legacy'
           });
@@ -234,7 +233,6 @@ export class ReplicationService {
             blob.mimeType,
             {
               appId: blob.appId || 'hashd', // Default to 'hashd' for legacy blobs
-              contentType: blob.contentType,
               shouldVerifyOnChain: blob.shouldVerifyOnChain,
               sender: blob.sender,
               timestamp: blob.timestamp
@@ -352,7 +350,6 @@ export class ReplicationService {
               blob.mimeType,
               {
                 appId: blob.appId,
-                contentType: blob.contentType,
                 shouldVerifyOnChain: blob.shouldVerifyOnChain,
                 sender: blob.sender,
                 timestamp: blob.timestamp
@@ -736,7 +733,6 @@ export class ReplicationService {
       hasPeerId: !!p2pPeerId,
       hasOptions: !!options,
       optionsAppId: options?.appId,
-      optionsContentType: options?.contentType,
       optionsShouldVerifyOnChain: options?.shouldVerifyOnChain
     });
     
@@ -1098,7 +1094,6 @@ export class ReplicationService {
             blob.mimeType,
             {
               appId: blob.appId,
-              contentType: blob.contentType,
               shouldVerifyOnChain: blob.shouldVerifyOnChain,
               sender: blob.sender,
               timestamp: blob.timestamp

@@ -18,6 +18,7 @@ Decentralized storage node for the ByteCave network. Provides encrypted blob sto
 - **Auto-Deregistration** - Automatic deregistration when REGISTER_ON_CHAIN=false
 - **File Size Limits** - 5MB maximum file size enforced across all storage and replication paths
 - **Chunked Message Sending** - Large messages (>64KB) automatically sent in chunks to prevent buffer overflow
+- **Standardized Metadata** - Type-safe blob metadata with ContentType enum and ReplicationMetadata interface
 
 ## Cryptographic Keys & Security Model
 
@@ -652,6 +653,57 @@ data/
 │   └── blocked-content.json  # Content policy
 ├── node-key.json       # ⚠️ CRITICAL: Node signing key (BACKUP!)
 └── p2p-identity.json   # P2P peer identity (backup recommended)
+```
+
+## Blob Metadata
+
+ByteCave uses standardized metadata for blob storage and replication operations.
+
+### ReplicationMetadata Interface
+
+Standardized metadata used internally during replication operations:
+
+```typescript
+interface ReplicationMetadata {
+  appId: string;              // Application identifier (e.g., 'hashd')
+  shouldVerifyOnChain: boolean; // Requires on-chain CID verification
+  sender: string;             // Wallet address that stored the blob
+  timestamp: number;          // Unix timestamp when stored
+}
+```
+
+**Note:** When storing blobs via the storage service, all these fields are optional.
+
+### Content Type
+
+ByteCave uses standard **MIME types** (e.g., `text/plain`, `image/jpeg`, `application/json`) for blob classification. The `mimeType` field in `BlobMetadata` stores this information.
+
+### Removed Fields
+
+The following legacy fields have been removed:
+
+- ❌ `guildId` - Removed from replication metadata (kept only in `IndexableBlobMetadata` for guild-specific indexing)
+- ❌ `metadata: Record<string, any>` - Generic catch-all removed; use explicit fields instead
+- ❌ `contentType: ContentType` - Removed custom enum; use standard `mimeType` field instead
+
+### Usage Example
+
+```typescript
+// Storing a blob with metadata
+await storageService.storeBlob(cid, ciphertext, 'text/plain', {
+  appId: 'hashd',
+  shouldVerifyOnChain: true,
+  sender: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb',
+  timestamp: Date.now()
+});
+
+// Replicating with metadata
+await replicationService.replicateToAll(cid, ciphertext, 'application/json', {
+  appId: 'hashd',
+  shouldVerifyOnChain: true,
+  sender: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb',
+  timestamp: Date.now()
+});
 ```
 
 ## Development
