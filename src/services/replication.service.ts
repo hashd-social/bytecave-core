@@ -152,7 +152,7 @@ export class ReplicationService {
         logger.info('Replication factor updated from contract', { factor });
       }
     } catch (error) {
-      logger.warn('Failed to fetch replication factor from contract, using default', error);
+      logger.warn('Failed to fetch replication factor from contract, using default', error as Record<string, unknown>);
     }
   }
 
@@ -223,7 +223,6 @@ export class ReplicationService {
             cid: blob.cid,
             size: blobData.ciphertext.length,
             appId: blob.appId,
-            shouldVerifyOnChain: blob.shouldVerifyOnChain,
             replicationSource: blob.replication?.source || 'legacy'
           });
 
@@ -232,8 +231,7 @@ export class ReplicationService {
             blobData.ciphertext,
             blob.mimeType,
             {
-              appId: blob.appId || 'hashd', // Default to 'hashd' for legacy blobs
-              shouldVerifyOnChain: blob.shouldVerifyOnChain,
+              appId: blob.appId || 'hashd',
               sender: blob.sender,
               timestamp: blob.timestamp
             }
@@ -350,7 +348,6 @@ export class ReplicationService {
               blob.mimeType,
               {
                 appId: blob.appId,
-                shouldVerifyOnChain: blob.shouldVerifyOnChain,
                 sender: blob.sender,
                 timestamp: blob.timestamp
               }
@@ -732,8 +729,7 @@ export class ReplicationService {
       cid,
       hasPeerId: !!p2pPeerId,
       hasOptions: !!options,
-      optionsAppId: options?.appId,
-      optionsShouldVerifyOnChain: options?.shouldVerifyOnChain
+      optionsAppId: options?.appId
     });
     
     if (!p2pPeerId) {
@@ -1094,7 +1090,6 @@ export class ReplicationService {
             blob.mimeType,
             {
               appId: blob.appId,
-              shouldVerifyOnChain: blob.shouldVerifyOnChain,
               sender: blob.sender,
               timestamp: blob.timestamp
             }

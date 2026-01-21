@@ -106,6 +106,7 @@ export const config: Config = {
   p2pRelayPeers: persistedConfig.p2pRelayPeers.length > 0
     ? persistedConfig.p2pRelayPeers
     : getEnvArray('P2P_RELAY_PEERS', []),
+  meshnetAddress: getConfigValue(persistedConfig.meshnetAddress, process.env.MESHNET_ADDRESS),
   p2pEnableDHT: getEnvBoolean('P2P_ENABLE_DHT', true),
   p2pEnableMDNS: getEnvBoolean('P2P_ENABLE_MDNS', true),
   p2pEnableRelay: getEnvBoolean('P2P_ENABLE_RELAY', true),
@@ -299,6 +300,13 @@ if (process.env.OWNER_ADDRESS && !persistedConfig.ownerAddress) {
     ownerAddress: process.env.OWNER_ADDRESS
   });
   console.log('[ConfigManager] Saved OWNER_ADDRESS to config.json');
+}
+
+if (process.env.MESHNET_ADDRESS && !persistedConfig.meshnetAddress) {
+  configManager.updateNodeConfig({
+    meshnetAddress: process.env.MESHNET_ADDRESS
+  });
+  console.log('[ConfigManager] Saved MESHNET_ADDRESS to config.json');
 }
 
 // Export ConfigManager for runtime config updates

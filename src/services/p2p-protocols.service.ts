@@ -31,7 +31,6 @@ interface ReplicateRequest {
   mimeType: string;
   ciphertext: string; // base64 encoded
   appId?: string;
-  shouldVerifyOnChain?: boolean; // If true, receiving node should verify CID exists on-chain
   sender?: string;
   timestamp?: number;
   authorization?: any; // For browser-to-node storage with signed authorization
@@ -341,7 +340,6 @@ class P2PProtocolsService {
       // Mark as 'replicated' so this node doesn't re-replicate it
       await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
         appId: request.appId,
-        shouldVerifyOnChain: request.shouldVerifyOnChain,
         sender: request.sender,
         timestamp: request.timestamp,
         fromPeer: remotePeer,
@@ -371,25 +369,12 @@ class P2PProtocolsService {
    */
   private async handleStore(stream: Stream, connection: Connection): Promise<void> {
     const remotePeer = connection.remotePeer.toString();
-    console.log('[P2P Store] Received store request from:', remotePeer.slice(0, 12));
-    logger.debug('Handling store request from browser', { from: remotePeer });
 
     try {
       // Read the request
       const request = await this.readMessage<ReplicateRequest>(stream);
       
-      console.log('[P2P Store] Request received:', {
-        hasRequest: !!request,
-        hasCid: !!request?.cid,
-        cidValue: request?.cid,
-        hasCiphertext: !!request?.ciphertext,
-        ciphertextType: typeof request?.ciphertext,
-        ciphertextLength: request?.ciphertext?.length,
-        requestKeys: request ? Object.keys(request) : []
-      });
-      
       if (!request || !request.cid || !request.ciphertext) {
-        console.log('[P2P Store] Invalid request - missing required fields');
         await this.writeMessage(stream, { success: false, error: 'Invalid request' });
         return;
       }
@@ -399,7 +384,6 @@ class P2PProtocolsService {
       const ciphertextSize = Buffer.from(request.ciphertext, 'base64').length;
       if (ciphertextSize > MAX_FILE_SIZE) {
         const sizeMB = (ciphertextSize / (1024 * 1024)).toFixed(2);
-        console.log(`[P2P Store] File size (${sizeMB}MB) exceeds maximum allowed size of 5MB`);
         await this.writeMessage(stream, { 
           success: false, 
           error: `File size (${sizeMB}MB) exceeds maximum allowed size of 5MB` 
@@ -439,9 +423,6 @@ class P2PProtocolsService {
           // Calculate nodeId using the centralized helper function
           const { calculateNodeId } = await import('../utils/node-id.js');
           const nodeId = calculateNodeId(secp256k1PublicKey);
-          
-          console.log('[P2P Store] Checking registration for nodeId:', nodeId.slice(0, 10) + '...');
-          console.log('[P2P Store] Using secp256k1 public key:', secp256k1PublicKey.slice(0, 20) + '...');
           
           // Check if this nodeId is registered on-chain
           const registeredNode = await contractIntegrationService.getNode(nodeId);
@@ -547,38 +528,28 @@ class P2PProtocolsService {
       }
 
       // Store the blob with metadata
-      console.log('[P2P Store] Storing blob with CID:', request.cid);
       const ciphertext = Buffer.from(request.ciphertext, 'base64');
       await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
         appId: request.appId,
-        shouldVerifyOnChain: request.shouldVerifyOnChain,
         sender: request.authorization?.sender,
         timestamp: request.authorization?.timestamp
         // Note: fromPeer is NOT set for browser storage - this is direct storage, not replication
         // fromPeer is only used for node-to-node replication via handleReplicate
       });
 
-      console.log('[P2P Store] Blob stored successfully, CID:', request.cid);
       logger.info('Blob stored from browser via P2P', { 
         cid: request.cid, 
         from: remotePeer,
         sender: request.authorization?.sender
       });
       
-      console.log('[P2P Store] Triggering replication for CID:', request.cid);
-      
       // Trigger replication to other nodes (async, don't wait)
-      // shouldVerifyOnChain comes from the request (set by client)
       const { replicationService } = await import('./replication.service.js');
       replicationService.replicateToAll(request.cid, ciphertext, request.mimeType, {
         appId: request.appId,
-        shouldVerifyOnChain: request.shouldVerifyOnChain,
         sender: request.authorization?.sender,
         timestamp: request.authorization?.timestamp
-      }).then((results) => {
-        console.log('[P2P Store] Replication completed:', results.length, 'successful replications');
       }).catch((err: any) => {
-        console.error('[P2P Store] Replication failed:', err.message);
         logger.warn('Replication failed for browser-stored blob', { 
           cid: request.cid, 
           error: err.message 
@@ -866,7 +837,6 @@ class P2PProtocolsService {
     mimeType: string,
     options?: { 
       appId?: string;
-      shouldVerifyOnChain?: boolean;
       sender?: string;
       timestamp?: number;
       metadata?: Record<string, any>;
@@ -909,17 +879,13 @@ class P2PProtocolsService {
         mimeType,
         ciphertext: ciphertext.toString('base64'),
         appId: options?.appId,
-        shouldVerifyOnChain: options?.shouldVerifyOnChain,
         sender: options?.sender,
         timestamp: options?.timestamp
       };
 
-      logger.info('[P2P-PROTOCOLS] Replication request details', {
+      logger.debug('[P2P-PROTOCOLS] Replication request details', {
         cid,
-        appId: request.appId,
-        shouldVerifyOnChain: request.shouldVerifyOnChain,
-        hasOptions: !!options,
-        optionsAppId: options?.appId
+        appId: request.appId
       });
 
       await this.writeMessage(stream, request);

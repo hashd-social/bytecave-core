@@ -8,7 +8,6 @@
  */
 export interface ReplicationMetadata {
   appId: string;              // Application identifier (e.g., 'hashd')
-  shouldVerifyOnChain: boolean; // Whether blob requires on-chain CID verification
   sender: string;             // Address that stored this blob
   timestamp: number;          // When blob was stored (Unix timestamp)
 }
@@ -22,8 +21,7 @@ export interface BlobMetadata {
   pinned?: boolean; // Never delete if true (Requirement 9)
   compressed?: boolean; // Whether blob is compressed with gzip
   integrityHash?: string; // HMAC of critical fields to detect tampering
-  appId?: string;        // keccak256(appName) - which app stored this
-  shouldVerifyOnChain?: boolean; // Whether this blob requires on-chain verification for replication
+  appId?: string;        // Application identifier - which app stored this
   sender?: string;       // Address that stored this blob
   timestamp?: number;    // When blob was stored
   replication?: {
@@ -66,7 +64,6 @@ export interface ReplicateRequest {
   fromPeer: string;
   // Application metadata (passed from original store)
   appId?: string;
-  shouldVerifyOnChain?: boolean;
   sender?: string;
   timestamp?: number;
 }
@@ -97,6 +94,7 @@ export interface HealthResponse {
   publicKey?: string;
   secp256k1PublicKey?: string;
   ownerAddress?: string;
+  hashdBalance?: string; // HASHD token balance formatted as string (e.g., "100000000")
   registeredOnChain?: boolean; // Whether node is registered in VaultNodesRegistry
   onChainNodeId?: string; // On-chain node ID if registered
   lastReplication: number;
@@ -171,6 +169,7 @@ export interface Config {
   p2pListenAddresses: string[];
   p2pBootstrapPeers: string[];
   p2pRelayPeers: string[];
+  meshnetAddress?: string; // NordVPN Meshnet hostname (e.g., alexx-atlas.nord)
   p2pEnableDHT: boolean;
   p2pEnableMDNS: boolean;
   p2pEnableRelay: boolean;

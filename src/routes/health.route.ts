@@ -227,7 +227,37 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
         registeredNodeCount = nodeCount.active;
       }
     } catch (error) {
-      logger.debug('Failed to get node count from contract', error);
+      logger.debug('Failed to get node count from contract', error as Record<string, unknown>);
+    }
+
+    // Get HASHD token balance for the node's owner address
+    let hashdBalance: string | undefined;
+    try {
+      const { contractIntegrationService } = await import('../services/contract-integration.service.js');
+      if (contractIntegrationService.isInitialized() && process.env.OWNER_ADDRESS) {
+        const { ethers } = await import('ethers');
+        const hashdTokenAddress = process.env.HASHD_TOKEN_ADDRESS;
+        
+        if (hashdTokenAddress) {
+          // Use the block number method to verify we can access the provider
+          const blockNumber = await contractIntegrationService.getBlockNumber();
+          if (blockNumber > 0) {
+            // Create a new provider instance using the same RPC URL
+            const provider = new ethers.JsonRpcProvider(config.rpcUrl || 'http://127.0.0.1:8545');
+            const hashdContract = new ethers.Contract(
+              hashdTokenAddress,
+              ['function balanceOf(address owner) view returns (uint256)'],
+              provider
+            );
+            
+            const balance = await hashdContract.balanceOf(process.env.OWNER_ADDRESS);
+            hashdBalance = ethers.formatEther(balance);
+            logger.debug('Fetched HASHD balance', { balance: hashdBalance });
+          }
+        }
+      }
+    } catch (error) {
+      logger.debug('Failed to fetch HASHD balance', error as Record<string, unknown>);
     }
 
     const response: HealthResponse = {
@@ -250,6 +280,7 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       publicKey,
       secp256k1PublicKey: p2pService.isStarted() ? (p2pService.getSecp256k1PublicKey() ?? undefined) : undefined,
       ownerAddress: process.env.OWNER_ADDRESS || undefined,
+      hashdBalance,
       registeredOnChain,
       onChainNodeId,
       lastReplication: 0, // TODO: Track last replication time

@@ -9,6 +9,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
+import { meshnetService } from './meshnet.service.js';
 
 interface CachedPeer {
   peerId: string;
@@ -109,19 +110,22 @@ class PeerCacheService {
     // Don't cache relay peers (they're in config already)
     if (multiaddrs.length === 0) return;
 
+    // Add Meshnet fallback addresses if available
+    const enhancedMultiaddrs = meshnetService.addMeshnetFallback(peerId, multiaddrs);
+
     const now = Date.now();
     const existing = this.cache.peers.find(p => p.peerId === peerId);
 
     if (existing) {
       // Update existing peer
-      existing.multiaddrs = multiaddrs;
+      existing.multiaddrs = enhancedMultiaddrs;
       existing.lastSeen = now;
       existing.successfulConnections++;
     } else {
       // Add new peer
       this.cache.peers.push({
         peerId,
-        multiaddrs,
+        multiaddrs: enhancedMultiaddrs,
         lastSeen: now,
         successfulConnections: 1
       });

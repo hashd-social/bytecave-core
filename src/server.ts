@@ -405,7 +405,8 @@ async function initializeContractIntegration(): Promise<void> {
       rpcUrl,
       privateKey, // Optional - if not provided, runs in read-only mode
       registryAddress,
-      incentivesAddress: process.env.VAULT_INCENTIVES_ADDRESS
+      incentivesAddress: process.env.VAULT_INCENTIVES_ADDRESS,
+      contentRegistryAddress: process.env.CONTENT_REGISTRY_ADDRESS
     });
 
     const signerAddress = await contractIntegrationService.getSignerAddress();

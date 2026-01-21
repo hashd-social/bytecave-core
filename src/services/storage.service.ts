@@ -129,7 +129,6 @@ export class StorageService {
     options?: { 
       fromPeer?: string;
       appId?: string;
-      shouldVerifyOnChain?: boolean;
       sender?: string;
       timestamp?: number;
       metadata?: Record<string, any>;
@@ -189,9 +188,8 @@ export class StorageService {
         compressed, // Track if blob is compressed
         // SECURITY: Generate integrity hash to detect metadata tampering
         integrityHash: generateMetadataIntegrityHash(cid, ciphertext.length, mimeType, createdAt, false),
-        // Application metadata (v2)
+        // Application metadata
         appId: options?.appId,
-        shouldVerifyOnChain: options?.shouldVerifyOnChain,
         sender: options?.sender,
         timestamp: options?.timestamp,
         replication: options?.fromPeer ? {
@@ -542,7 +540,7 @@ export class StorageService {
           return parseInt(stdout.trim()) * 1024; // Convert KB to bytes
         }
       } catch (cmdError) {
-        logger.warn('Failed to get free disk space', cmdError);
+        logger.warn('Failed to get free disk space', cmdError as Record<string, unknown>);
         return 0;
       }
     }

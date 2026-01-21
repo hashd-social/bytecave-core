@@ -9,6 +9,7 @@
 
 import { ethers } from 'ethers';
 import { logger } from '../utils/logger.js';
+import { cidToBytes32, appIdsToBytes32 } from '../utils/content-registry.js';
 
 // ABI fragments for the contracts we need
 const NODE_REGISTRY_ABI = [
@@ -682,7 +683,7 @@ export class ContractIntegrationService {
 
   /**
    * Verify if a CID is registered on-chain
-   * Used during replication to verify content authenticity
+   * Used during replication 
    */
   async isContentRegistered(cid: string): Promise<boolean> {
     if (!this.contentRegistry) {
@@ -691,7 +692,8 @@ export class ContractIntegrationService {
     }
 
     try {
-      const isRegistered = await this.contentRegistry.isContentRegistered(cid);
+      const cidHash = cidToBytes32(cid);
+      const isRegistered = await this.contentRegistry.isContentRegistered(cidHash);
       return isRegistered;
     } catch (error: any) {
       logger.error('[CONTRACT] Failed to verify CID registration', { cid, error: error.message });
@@ -708,7 +710,8 @@ export class ContractIntegrationService {
     }
 
     try {
-      const record = await this.contentRegistry.getContentRecord(cid);
+      const cidHash = cidToBytes32(cid);
+      const record = await this.contentRegistry.getContentRecord(cidHash);
       return {
         owner: record.owner,
         appId: record.appId,
@@ -758,8 +761,11 @@ export class ContractIntegrationService {
       }
 
       // If allowedApps filter is set, verify appId is in the list
+      // Note: record.appId is a bytes32 hash, so we need to hash the allowedApps for comparison
       if (allowedApps && allowedApps.length > 0) {
-        if (!allowedApps.includes(record.appId)) {
+        const allowedAppHashes = appIdsToBytes32(allowedApps);
+        
+        if (!allowedAppHashes.includes(record.appId)) {
           return { 
             authorized: false, 
             appId: record.appId,

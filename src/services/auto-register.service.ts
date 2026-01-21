@@ -117,7 +117,25 @@ export class AutoRegisterService {
       }
 
       // Approve tokens if needed
-      const currentAllowance = await hashd.allowance(wallet.address, config.registryAddress);
+      let currentAllowance;
+      try {
+        logger.info('Checking current allowance...', {
+          owner: wallet.address,
+          spender: config.registryAddress,
+          hashdToken: config.hashdTokenAddress
+        });
+        currentAllowance = await hashd.allowance(wallet.address, config.registryAddress);
+        logger.info(`Current allowance: ${ethers.formatEther(currentAllowance)} HASHD`);
+      } catch (error: any) {
+        logger.error('Failed to check allowance, will attempt approval anyway', {
+          error: error.message,
+          code: error.code,
+          data: error.data
+        });
+        // Assume zero allowance if check fails
+        currentAllowance = 0n;
+      }
+      
       if (currentAllowance < stakeAmount) {
         logger.info('Approving HASHD tokens for registry...');
         const approveTx = await hashd.approve(config.registryAddress, stakeAmount);

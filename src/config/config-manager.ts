@@ -25,6 +25,7 @@ export interface PersistedConfig {
   // P2P Configuration
   p2pBootstrapPeers: string[];
   p2pRelayPeers: string[];
+  meshnetAddress?: string; // NordVPN Meshnet hostname (e.g., alexx-atlas.nord)
   
   // Sharding
   shardCount?: number;
