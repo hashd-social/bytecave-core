@@ -442,11 +442,12 @@ async function initializeStorageAuthorization(): Promise<void> {
   try {
     logger.info('Initializing storage authorization service (application-specific authorization)...');
     
-    await storageAuthorizationService.initialize({
+    await storageAuthorizationService.initialize(
       rpcUrl,
-      messageStorageAddress: process.env.MESSAGE_STORAGE_ADDRESS,
-      postStorageAddress: process.env.POST_STORAGE_ADDRESS
-    });
+      process.env.MESSAGE_STORAGE_ADDRESS,
+      process.env.POST_STORAGE_ADDRESS,
+      process.env.CONTENT_REGISTRY_ADDRESS
+    );
 
     logger.info('✅ Storage authorization service initialized');
   } catch (error: any) {

@@ -293,31 +293,28 @@ class P2PProtocolsService {
         hasAllowlist: allowedApps !== undefined
       });
       
-      // SECURITY CHECK 6: On-chain verification (if requested by sender)
-      // If shouldVerifyOnChain is true, verify CID exists on-chain in authorized contracts
-      // This gives nodes flexibility to decide verification policy
-      if (request.shouldVerifyOnChain) {
-        const { storageAuthorizationService } = await import('./storage-authorization.service.js');
-        const onChainVerification = await storageAuthorizationService.verifyCIDOnChain(request.cid);
-        
-        if (!onChainVerification.authorized) {
-          logger.warn('Replication rejected: CID not found on-chain', { 
-            cid: request.cid, 
-            from: remotePeer,
-            error: onChainVerification.error,
-            shouldVerifyOnChain: request.shouldVerifyOnChain
-          });
-          await this.writeMessage(stream, { 
-            success: false, 
-            error: 'CID not authorized on-chain' 
-          });
-          return;
-        }
-        
-        logger.debug('On-chain verification passed', { 
-          cid: request.cid 
+      // SECURITY CHECK 6: On-chain verification (ContentRegistry)
+      // All replicated content must be registered in ContentRegistry
+      const { storageAuthorizationService } = await import('./storage-authorization.service.js');
+      const onChainVerification = await storageAuthorizationService.verifyCIDOnChain(request.cid);
+      
+      if (!onChainVerification.authorized) {
+        logger.warn('Replication rejected: CID not found in ContentRegistry', { 
+          cid: request.cid, 
+          from: remotePeer,
+          error: onChainVerification.error
         });
+        await this.writeMessage(stream, { 
+          success: false, 
+          error: 'CID not registered in ContentRegistry' 
+        });
+        return;
       }
+      
+      logger.debug('✅ ContentRegistry verification passed', { 
+        cid: request.cid,
+        source: onChainVerification.source
+      });
       
       // For media: verify sender was provided
       if (!request.sender) {

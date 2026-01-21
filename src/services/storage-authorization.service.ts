@@ -20,7 +20,7 @@ import {
 } from '../types/index.js';
 
 // Signature message format (v3 - numerical sharding, content-agnostic)
-const SIGNATURE_MESSAGE_TEMPLATE = `ByteCave Storage Request for Content Hash
+const SIGNATURE_MESSAGE_TEMPLATE = `ByteCave Storage Request for:
 Content Hash: {contentHash}
 App ID: {appId}
 Timestamp: {timestamp}
@@ -35,10 +35,15 @@ const POST_STORAGE_ABI = [
   'function getPostByCID(string cid) view returns (tuple(bool exists, address author, uint256 timestamp))'
 ];
 
+const CONTENT_REGISTRY_ABI = [
+  'function isContentRegistered(bytes32 cid) external view returns (bool)'
+];
+
 export class StorageAuthorizationService {
   private provider: ethers.Provider | null = null;
   private messageStorageAddress: string | null = null;
   private postStorageAddress: string | null = null;
+  private contentRegistryAddress: string | null = null;
   private initialized = false;
   
   // Timestamp tolerance (5 minutes)
@@ -55,20 +60,18 @@ export class StorageAuthorizationService {
   /**
    * Initialize the service with RPC and contract addresses
    */
-  async initialize(config: {
-    rpcUrl: string;
-    messageStorageAddress?: string;
-    postStorageAddress?: string;
-  }): Promise<void> {
+  async initialize(rpcUrl: string, messageStorageAddress?: string, postStorageAddress?: string, contentRegistryAddress?: string) {
     try {
-      this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
-      this.messageStorageAddress = config.messageStorageAddress || null;
-      this.postStorageAddress = config.postStorageAddress || null;
+      this.provider = new ethers.JsonRpcProvider(rpcUrl);
+      this.messageStorageAddress = messageStorageAddress || null;
+      this.postStorageAddress = postStorageAddress || null;
+      this.contentRegistryAddress = contentRegistryAddress || null;
       this.initialized = true;
       
       logger.info('Storage authorization service initialized', {
-        messageStorage: config.messageStorageAddress || 'not configured',
-        postStorage: config.postStorageAddress || 'not configured'
+        hasMessageStorage: !!this.messageStorageAddress,
+        hasPostStorage: !!this.postStorageAddress,
+        hasContentRegistry: !!this.contentRegistryAddress
       });
       
       // Start cleanup intervals
@@ -98,6 +101,29 @@ export class StorageAuthorizationService {
 
     try {
       logger.debug('Verifying CID on-chain', { cid });
+
+      // Check ContentRegistry first (primary source for all content)
+      if (this.contentRegistryAddress) {
+        const contentRegistry = new ethers.Contract(
+          this.contentRegistryAddress,
+          CONTENT_REGISTRY_ABI,
+          this.provider
+        );
+
+        try {
+          // Convert CID string to bytes32
+          const cidBytes32 = ethers.keccak256(ethers.toUtf8Bytes(cid));
+          const isRegistered = await contentRegistry.isContentRegistered(cidBytes32);
+          if (isRegistered) {
+            const cacheEntry = { authorized: true, source: 'ContentRegistry', timestamp: Date.now() };
+            this.cidVerificationCache.set(cid, cacheEntry);
+            logger.info('CID verified on-chain', { cid, source: 'ContentRegistry' });
+            return { authorized: true, source: 'ContentRegistry' };
+          }
+        } catch (error: any) {
+          logger.debug('CID not found in ContentRegistry', { cid, error: error.message });
+        }
+      }
 
       // Check MessageStorage contract
       if (this.messageStorageAddress) {
@@ -148,6 +174,7 @@ export class StorageAuthorizationService {
       logger.warn('CID not found in any authorized contract', { 
         cid,
         checkedContracts: {
+          contentRegistry: !!this.contentRegistryAddress,
           messageStorage: !!this.messageStorageAddress,
           postStorage: !!this.postStorageAddress
         }
