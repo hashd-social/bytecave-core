@@ -32,12 +32,17 @@ export function tlsEnforcementMiddleware(req: Request, _res: Response, next: Nex
     req.headers['x-forwarded-ssl'] === 'on';
 
   if (!isSecure) {
-    // Log insecure request but don't block (reverse proxy may strip headers)
-    logger.warn('Insecure request in production', {
-      ip: req.ip,
-      path: req.path,
-      forwardedProto: req.headers['x-forwarded-proto']
-    });
+    // Skip warning for localhost/loopback addresses (local development)
+    const isLocalhost = req.ip === '::1' || req.ip === '127.0.0.1' || req.ip === '::ffff:127.0.0.1';
+    
+    if (!isLocalhost) {
+      // Log insecure request but don't block (reverse proxy may strip headers)
+      logger.warn('Insecure request in production', {
+        ip: req.ip,
+        path: req.path,
+        forwardedProto: req.headers['x-forwarded-proto']
+      });
+    }
   }
 
   next();

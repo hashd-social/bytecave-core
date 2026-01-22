@@ -975,7 +975,8 @@ class P2PProtocolsService {
       return response;
 
     } catch (error: any) {
-      logger.warn('Failed to get health from peer', { peerId, error: error.message });
+      // Use debug level - relay peers don't support health protocol, which is expected
+      logger.debug('Failed to get health from peer', { peerId, error: error.message });
       return null;
     }
   }

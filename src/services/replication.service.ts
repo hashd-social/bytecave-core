@@ -869,10 +869,12 @@ export class ReplicationService {
       }
 
       // Try to get health data from each peer to build peer list
+      // Silently skip relay-only peers that don't implement ByteCave protocols
       const peerPromises = connectedPeerIds.map(async (peerId: string) => {
         try {
           const health = await p2pProtocolsService.getHealthFromPeer(peerId);
           if (!health || !health.nodeId) {
+            // Peer doesn't support health protocol (likely a relay) - skip silently
             return null;
           }
 

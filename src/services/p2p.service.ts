@@ -27,6 +27,7 @@ import { logger } from '../utils/logger.js';
 import { config, getConfigManager } from '../config/index.js';
 import { p2pProtocolsService } from './p2p-protocols.service.js';
 import { peerCacheService } from './peer-cache.service.js';
+import { meshnetService } from './meshnet.service.js';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -391,7 +392,7 @@ async start(): Promise<void> {
         
         // Import and call auto-registration service
         const { autoRegisterService } = await import('./auto-register.service.js');
-        await autoRegisterService.handleAutoRegistration(peerId, publicKeyForContract);
+        await autoRegisterService.handleAutoRegistration(peerId, publicKeyForContract, this);
       } else {
         logger.warn('Could not extract public key for auto-registration');
       }
@@ -476,6 +477,10 @@ async start(): Promise<void> {
       }
       
       this.emit('peer:connect', peerId);
+      
+      // Announce immediately when a new peer connects
+      // This ensures browsers get health data instantly on refresh
+      this.announce();
     });
 
     this.node.addEventListener('peer:disconnect', (event) => {
@@ -682,12 +687,13 @@ async start(): Promise<void> {
     peerId: string;
     availableStorage: number;
     blobCount: number;
+    multiaddrs?: string[];
   }): void {
     const existing = this.knownPeers.get(announcement.peerId);
 
     const peerInfo: P2PPeerInfo = {
       peerId: announcement.peerId,
-      multiaddrs: existing?.multiaddrs || [],
+      multiaddrs: announcement.multiaddrs || existing?.multiaddrs || [],
       lastSeen: Date.now(),
       reputation: existing?.reputation || 100
     };
@@ -695,10 +701,67 @@ async start(): Promise<void> {
     this.knownPeers.set(announcement.peerId, peerInfo);
     this.emit('peer:announce', peerInfo);
 
-    logger.debug('Received peer announcement', {
-      peerId: announcement.peerId
-    });
+    // Add peer to cache with multiaddrs (including meshnet fallback)
+    if (announcement.multiaddrs && announcement.multiaddrs.length > 0) {
+      peerCacheService.addPeer(announcement.peerId, announcement.multiaddrs);
+      
+      // Try to connect to this peer if not already connected
+      if (this.node) {
+        const alreadyConnected = this.node.getPeers().some(p => p.toString() === announcement.peerId);
+        if (!alreadyConnected) {
+          // Only log when discovering a NEW peer, not on re-announcements
+          const isNewPeer = !existing;
+          if (isNewPeer) {
+            logger.info('Discovered new peer via announcement', {
+              peerId: announcement.peerId.substring(0, 12),
+              multiaddrsCount: announcement.multiaddrs.length
+            });
+          }
+          
+          // Attempt to dial the peer using their announced multiaddrs
+          this.dialPeerFromAnnouncement(announcement.peerId, announcement.multiaddrs).catch(err => {
+            // Only log dial failures for new peers to avoid spam
+            if (isNewPeer) {
+              logger.debug('Failed to dial new peer', { 
+                peerId: announcement.peerId.substring(0, 12),
+                error: err.message 
+              });
+            }
+          });
+        }
+        // Silently update existing connected peers without logging
+      }
+    }
   }
+
+  private async dialPeerFromAnnouncement(peerId: string, multiaddrs: string[]): Promise<void> {
+    if (!this.node) return;
+
+    // Try each multiaddr until one succeeds
+    for (const addr of multiaddrs) {
+      try {
+        // Skip relay circuit addresses - those are for browsers
+        if (addr.includes('p2p-circuit')) continue;
+        
+        const ma = multiaddr(addr);
+        await this.node.dial(ma);
+        logger.info('Successfully dialed announced peer', { 
+          peerId: peerId.substring(0, 12),
+          addr: addr.substring(0, 50) 
+        });
+        return; // Success, stop trying other addresses
+      } catch (error: any) {
+        logger.debug('Failed to dial multiaddr', { 
+          peerId: peerId.substring(0, 12),
+          addr: addr.substring(0, 50),
+          error: error.message 
+        });
+        // Continue to next address
+      }
+    }
+  }
+
+  private hasAnnounced = false;
 
   private startAnnouncements(): void {
     // Announce immediately
@@ -717,6 +780,15 @@ async start(): Promise<void> {
     if (!pubsub) return;
 
     try {
+      // Get node's multiaddrs
+      const nodeMultiaddrs = this.node.getMultiaddrs().map(ma => ma.toString());
+      
+      // Add meshnet fallback addresses if configured
+      const multiaddrsWithMeshnet = meshnetService.addMeshnetFallback(
+        this.node.peerId.toString(),
+        nodeMultiaddrs
+      );
+      
       // Construct relay circuit addresses for browser connectivity
       const relayAddrs: string[] = [];
       
@@ -732,13 +804,32 @@ async start(): Promise<void> {
         relayAddrs.push(circuitAddr);
       }
 
+      // Check on-chain registration status
+      const { contractIntegrationService } = await import('./contract-integration.service.js');
+      let registeredOnChain = false;
+      let onChainNodeId: string | undefined;
+      
+      if (contractIntegrationService.isInitialized()) {
+        try {
+          const peerId = this.node.peerId.toString();
+          const nodeIdFromContract = await contractIntegrationService.getNodeByPeerId(peerId);
+          registeredOnChain = nodeIdFromContract !== null;
+          onChainNodeId = nodeIdFromContract || undefined;
+        } catch (err) {
+          // Ignore errors, just don't include registration status
+        }
+      }
+
       const announcement = {
         peerId: this.node.peerId.toString(),
         nodeId: config.nodeId,
         availableStorage: config.gcMaxStorageMB * 1024 * 1024,
         blobCount: 0,
         timestamp: Date.now(),
-        relayAddrs: relayAddrs // Circuit relay addresses for browser connectivity
+        multiaddrs: multiaddrsWithMeshnet, // Direct connection addresses including meshnet
+        relayAddrs: relayAddrs, // Circuit relay addresses for browser connectivity
+        registeredOnChain,
+        onChainNodeId
       };
 
       await pubsub.publish(
@@ -746,11 +837,18 @@ async start(): Promise<void> {
         fromString(JSON.stringify(announcement))
       );
 
-      logger.info('Published P2P announcement', { 
-        nodeId: announcement.nodeId,
-        peerId: announcement.peerId.slice(0, 16) + '...',
-        relayAddrs: relayAddrs.length
-      });
+      // Only log the first announcement to avoid spam
+      if (!this.hasAnnounced) {
+        logger.info('Published P2P announcement', { 
+          nodeId: announcement.nodeId,
+          peerId: announcement.peerId.slice(0, 16) + '...',
+          multiaddrs: multiaddrsWithMeshnet.length,
+          relayAddrs: relayAddrs.length,
+          multiaddrsPreview: multiaddrsWithMeshnet.slice(0, 3)
+        });
+        this.hasAnnounced = true;
+      }
+      // Subsequent announcements happen silently every 60s to maintain presence
     } catch (error) {
       logger.warn('Failed to publish announcement', { error });
     }

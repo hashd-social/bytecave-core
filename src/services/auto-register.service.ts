@@ -24,7 +24,7 @@ export class AutoRegisterService {
    * Perform auto-registration or deregistration based on config
    * Called after P2P service has started and peer ID is available
    */
-  async handleAutoRegistration(peerId: string, publicKeyHex: string): Promise<void> {
+  async handleAutoRegistration(peerId: string, publicKeyHex: string, p2pService?: any): Promise<void> {
     // Check if auto-registration is configured
     if (config.autoRegisterOnChain === undefined) {
       logger.info('Auto-registration not configured (REGISTER_ON_CHAIN not set)');
@@ -48,16 +48,16 @@ export class AutoRegisterService {
     }
 
     if (config.autoRegisterOnChain) {
-      await this.autoRegister(peerId, publicKeyHex);
+      await this.autoRegister(peerId, publicKeyHex, p2pService);
     } else {
-      await this.autoDeregister();
+      await this.autoDeregister(p2pService);
     }
   }
 
   /**
    * Auto-register node on-chain
    */
-  private async autoRegister(peerId: string, publicKeyHex: string): Promise<void> {
+  private async autoRegister(peerId: string, publicKeyHex: string, p2pService?: any): Promise<void> {
     logger.info('🔄 Auto-registration enabled - registering node on-chain...');
     logger.warn('⚠️  This will stake 1000 HASHD tokens from the configured wallet');
 
@@ -170,6 +170,12 @@ export class AutoRegisterService {
       if (nodeId) {
         logger.info(`✅ Node registered successfully! (nodeId: ${nodeId.slice(0, 16)}...)`);
         logger.info(`   Staked: 1000 HASHD tokens`);
+        
+        // Announce immediately so network knows about registration
+        if (p2pService) {
+          p2pService.announce();
+          logger.info('📢 Announced registration to network');
+        }
       } else {
         logger.error('Registration failed: no nodeId returned');
       }
@@ -185,7 +191,7 @@ export class AutoRegisterService {
   /**
    * Auto-deregister node from chain
    */
-  private async autoDeregister(): Promise<void> {
+  private async autoDeregister(p2pService?: any): Promise<void> {
     logger.info('🔄 Auto-deregistration enabled - deregistering node from chain...');
     logger.info('⚠️  This will return staked HASHD tokens to the wallet');
 
@@ -236,6 +242,12 @@ export class AutoRegisterService {
       if (success) {
         logger.info(`✅ Node deregistered successfully!`);
         logger.info(`   Staked tokens returned to wallet`);
+        
+        // Announce immediately so network knows about deregistration
+        if (p2pService) {
+          p2pService.announce();
+          logger.info('📢 Announced deregistration to network');
+        }
       } else {
         logger.error('Deregistration failed');
       }
