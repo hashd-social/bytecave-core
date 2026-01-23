@@ -28,13 +28,14 @@ import { config, getConfigManager } from '../config/index.js';
 import { p2pProtocolsService } from './p2p-protocols.service.js';
 import { peerCacheService } from './peer-cache.service.js';
 import { meshnetService } from './meshnet.service.js';
+import { storageWebSocketService } from './storage-websocket.service.js';
 import fs from 'fs/promises';
 import path from 'path';
 
 const ANNOUNCE_TOPIC = 'bytecave-announce';
 const BROADCAST_TOPIC = 'bytecave-broadcast';
 const SIGNALING_TOPIC_PREFIX = 'bytecave-signaling-';
-const ANNOUNCE_INTERVAL = 60000; // 1 minute
+const ANNOUNCE_INTERVAL = 30000; // 30 seconds
 
 export interface P2PPeerInfo {
   peerId: string;
@@ -330,6 +331,15 @@ async start(): Promise<void> {
       const addrs = this.node.getMultiaddrs().map(ma => ma.toString());
       this.emit('started', { peerId, addresses: addrs });
 
+      // Connect to relay WebSocket for browser storage requests
+      try {
+        await storageWebSocketService.connect(peerId);
+        logger.info('[P2P] Connected to relay WebSocket for storage requests');
+      } catch (wsError: any) {
+        logger.warn('[P2P] Failed to connect to relay WebSocket', { error: wsError.message });
+        // Non-fatal - P2P protocols still work
+      }
+
       // Handle auto-registration after P2P is started and we have a peer ID
       // Extract the raw secp256k1 public key for registration
       logger.info('[P2P] Attempting to extract secp256k1 public key from peer ID');
@@ -487,6 +497,25 @@ async start(): Promise<void> {
       const peerId = event.detail.toString();
       logger.info('Peer disconnected', { peerId: peerId.slice(0, 16) + '...' });
       this.emit('peer:disconnect', peerId);
+      
+      // Check if this was a relay peer and schedule reconnection
+      const isRelayPeer = config.p2pRelayPeers.some(addr => addr.includes(peerId));
+      if (isRelayPeer) {
+        logger.info('Relay peer disconnected, scheduling reconnection...', { peerId: peerId.slice(0, 16) + '...' });
+        // Attempt reconnection after 5 seconds
+        setTimeout(async () => {
+          try {
+            const relayAddr = config.p2pRelayPeers.find(addr => addr.includes(peerId));
+            if (relayAddr && this.node) {
+              logger.info('Attempting to reconnect to relay peer', { addr: relayAddr });
+              await this.node.dial(multiaddr(relayAddr));
+              logger.info('Successfully reconnected to relay peer');
+            }
+          } catch (err: any) {
+            logger.warn('Failed to reconnect to relay peer, will retry on next disconnect', { error: err.message });
+          }
+        }, 5000);
+      }
     });
 
     // Listen for connection upgrades (DCUTR success)
@@ -806,29 +835,39 @@ async start(): Promise<void> {
 
       // Check on-chain registration status
       const { contractIntegrationService } = await import('./contract-integration.service.js');
-      let registeredOnChain = false;
+      let isRegistered = false;
       let onChainNodeId: string | undefined;
       
-      if (contractIntegrationService.isInitialized()) {
+      const isInitialized = contractIntegrationService.isInitialized();
+      if (isInitialized) {
         try {
           const peerId = this.node.peerId.toString();
           const nodeIdFromContract = await contractIntegrationService.getNodeByPeerId(peerId);
-          registeredOnChain = nodeIdFromContract !== null;
+          isRegistered = nodeIdFromContract !== null;
           onChainNodeId = nodeIdFromContract || undefined;
-        } catch (err) {
-          // Ignore errors, just don't include registration status
+          
+          logger.info('[ANNOUNCE] Registration check in announcement', {
+            peerId: peerId.slice(0, 16) + '...',
+            nodeIdFromContract: nodeIdFromContract?.slice(0, 16) + '...',
+            isRegistered
+          });
+        } catch (err: any) {
+          logger.warn('Failed to check registration status in announcement', { error: err.message });
         }
+      } else {
+        logger.info('[ANNOUNCE] Contract integration not initialized, skipping registration check');
       }
 
       const announcement = {
         peerId: this.node.peerId.toString(),
+        publicKey: this.secp256k1PublicKey || '', // secp256k1 public key for contract verification
         nodeId: config.nodeId,
         availableStorage: config.gcMaxStorageMB * 1024 * 1024,
         blobCount: 0,
         timestamp: Date.now(),
         multiaddrs: multiaddrsWithMeshnet, // Direct connection addresses including meshnet
         relayAddrs: relayAddrs, // Circuit relay addresses for browser connectivity
-        registeredOnChain,
+        isRegistered,
         onChainNodeId
       };
 

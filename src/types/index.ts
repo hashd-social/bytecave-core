@@ -95,7 +95,7 @@ export interface HealthResponse {
   secp256k1PublicKey?: string;
   ownerAddress?: string;
   hashdBalance?: string; // HASHD token balance formatted as string (e.g., "100000000")
-  registeredOnChain?: boolean; // Whether node is registered in VaultNodesRegistry
+  isRegistered?: boolean; // Whether node is registered in VaultNodesRegistry
   onChainNodeId?: string; // On-chain node ID if registered
   lastReplication: number;
   metrics: {
@@ -160,6 +160,7 @@ export interface Config {
   // Contract integration
   rpcUrl: string;
   registryAddress: string;
+  appRegistryAddress: string;
   // Auto-registration
   autoRegisterOnChain?: boolean; // undefined = skip, true = register, false = deregister
   privateKey: string;

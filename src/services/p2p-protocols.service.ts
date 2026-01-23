@@ -67,7 +67,7 @@ export interface P2PHealthResponse {
   publicKey?: string;
   secp256k1PublicKey?: string;
   ownerAddress?: string;
-  registeredOnChain?: boolean;
+  isRegistered?: boolean;
   onChainNodeId?: string;
   metrics?: {
     requestsLastHour: number;
@@ -106,7 +106,7 @@ interface HaveListResponse {
 
 class P2PProtocolsService {
   private node: Libp2p | null = null;
-  private startTime = Date.now();
+  // private startTime = Date.now(); // Unused
 
   /**
    * Register all protocol handlers on the libp2p node
@@ -639,7 +639,7 @@ class P2PProtocolsService {
 
       // Get on-chain registration status
       const { contractIntegrationService } = await import('./contract-integration.service.js');
-      let registeredOnChain = false;
+      let isRegistered = false;
       let onChainNodeId: string | undefined;
       
       if (contractIntegrationService.isInitialized() && publicKey) {
@@ -647,21 +647,21 @@ class P2PProtocolsService {
           const peerId = this.node?.peerId.toString();
           if (peerId) {
             const nodeIdFromContract = await contractIntegrationService.getNodeByPeerId(peerId);
-            registeredOnChain = nodeIdFromContract !== null;
+            isRegistered = nodeIdFromContract !== null;
             onChainNodeId = nodeIdFromContract || undefined;
           }
         } catch (err) {
-          // Ignore - not critical for health response
+          logger.warn('Failed to check registration status', { error: err });
         }
       }
 
       const response: P2PHealthResponse = {
-        peerId: this.node?.peerId.toString() || '',
-        status: versionStatus.outdated || versionStatus.outdatedWarning ? 'outdated' : 'healthy',
+        peerId: this.node?.peerId.toString() || 'unknown',
+        status: versionStatus.outdated ? 'outdated' : 'healthy',
         blobCount: stats.blobCount,
         storageUsed: stats.totalSize,
         storageMax: config.gcMaxStorageMB * 1024 * 1024,
-        uptime: Math.floor((Date.now() - this.startTime) / 1000), // Return seconds, not milliseconds
+        uptime: process.uptime(),
         version: versionStatus.current,
         minVersion: versionStatus.minimum || undefined,
         multiaddrs,
@@ -669,7 +669,7 @@ class P2PProtocolsService {
         publicKey,
         secp256k1PublicKey: p2pService.getSecp256k1PublicKey() || undefined,
         ownerAddress: config.ownerAddress,
-        registeredOnChain,
+        isRegistered,
         onChainNodeId,
         metrics: {
           requestsLastHour: metrics.requestsLastHour,
@@ -685,7 +685,7 @@ class P2PProtocolsService {
         remotePeer: remotePeer.slice(0, 12) + '...',
         version: versionStatus.current,
         minVersion: versionStatus.minimum,
-        registeredOnChain,
+        isRegistered,
         onChainNodeId
       });
 

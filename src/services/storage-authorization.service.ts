@@ -235,44 +235,65 @@ export class StorageAuthorizationService {
       };
     }
 
-    // 3. Verify sender is authorized for this appId (AppRegistry check)
-    // AppRegistry validation is optional - if not initialized, skip with warning
+    // 3. Verify app authorization (two-step check)
     const { appRegistryService } = await import('./app-registry.service.js');
     const { config } = await import('../config/index.js');
     const hasAllowedAppsFilter = config.allowedApps && config.allowedApps.length > 0;
     
-    if (hasAllowedAppsFilter && appRegistryService.isInitialized()) {
-      // Verify the app is registered and sender is authorized
-      const isAuthorized = await appRegistryService.isAuthorized(
-        authorization.appId,
-        authorization.sender
-      );
+    // Step A: Verify app is registered on-chain (always required if AppRegistry is initialized)
+    if (appRegistryService.isInitialized()) {
+      const appDetails = await appRegistryService.getApp(authorization.appId);
       
-      if (!isAuthorized) {
-        logger.warn('AppRegistry authorization failed', {
-          appId: authorization.appId.slice(0, 16) + '...',
-          sender: authorization.sender
+      if (!appDetails || !appDetails.active) {
+        logger.warn('AppRegistry check failed - app not registered or not active', {
+          appId: authorization.appId,
+          exists: !!appDetails,
+          active: appDetails?.active
         });
         return {
           authorized: false,
-          error: 'Sender not authorized for this appId or app not registered',
+          error: 'App not registered or not active in AppRegistry',
           details: {
-            appId: authorization.appId,
-            sender: authorization.sender
+            appId: authorization.appId
           }
         };
       }
-      logger.debug('✅ AppRegistry authorization verified', {
-        appId: authorization.appId.slice(0, 16) + '...',
-        sender: authorization.sender
-      });
-    } else if (hasAllowedAppsFilter && !appRegistryService.isInitialized()) {
-      logger.warn('AppRegistry not initialized - skipping app authorization validation', {
-        appId: authorization.appId.slice(0, 16) + '...'
+      
+      logger.debug('✅ App is registered on-chain', {
+        appId: authorization.appId,
+        appName: appDetails.appName,
+        owner: appDetails.owner
       });
     } else {
-      logger.debug('AppRegistry validation skipped (no allowedApps filter)', {
-        appId: authorization.appId.slice(0, 16) + '...'
+      logger.warn('AppRegistry not initialized - cannot verify app registration', {
+        appId: authorization.appId
+      });
+      // Fail closed - if AppRegistry is not initialized, reject storage
+      return {
+        authorized: false,
+        error: 'AppRegistry not initialized - cannot verify app registration'
+      };
+    }
+    
+    // Step B: Check if app is in node's allowedApps filter (if configured)
+    if (hasAllowedAppsFilter) {
+      if (!config.allowedApps.includes(authorization.appId)) {
+        logger.warn('App not in node allowedApps filter', {
+          appId: authorization.appId,
+          allowedApps: config.allowedApps
+        });
+        return {
+          authorized: false,
+          error: 'App not in node allowedApps filter',
+          details: {
+            appId: authorization.appId,
+            allowedApps: config.allowedApps
+          }
+        };
+      }
+      
+      logger.debug('✅ App is in node allowedApps filter', {
+        appId: authorization.appId
       });
     }
 
@@ -290,14 +311,23 @@ export class StorageAuthorizationService {
       };
     }
 
-    // 5. Verify content hash matches
-    if (authorization.contentHash.toLowerCase() !== actualContentHash.toLowerCase()) {
+    // 5. Verify content hash matches (normalize by removing 0x prefix if present)
+    const normalizedAuthHash = authorization.contentHash.startsWith('0x') 
+      ? authorization.contentHash.slice(2).toLowerCase()
+      : authorization.contentHash.toLowerCase();
+    const normalizedActualHash = actualContentHash.startsWith('0x')
+      ? actualContentHash.slice(2).toLowerCase()
+      : actualContentHash.toLowerCase();
+    
+    if (normalizedAuthHash !== normalizedActualHash) {
       return {
         authorized: false,
         error: 'Content hash mismatch',
         details: {
           provided: authorization.contentHash,
-          actual: actualContentHash
+          actual: actualContentHash,
+          normalizedProvided: normalizedAuthHash,
+          normalizedActual: normalizedActualHash
         }
       };
     }

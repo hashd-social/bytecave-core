@@ -40,30 +40,40 @@ class AppRegistryService {
   }
 
   /**
-   * Check if a sender is authorized to store data for an appId
+   * Check if an app is registered and active
    * 
-   * @param appId - keccak256(appName)
-   * @param sender - Ethereum address of the sender
-   * @returns true if authorized, false otherwise
+   * @param appId - App name string (will be converted to bytes32)
+   * @param _sender - Ethereum address of the sender (not used, kept for interface compatibility)
+   * @returns true if app is registered and active, false otherwise
    */
-  async isAuthorized(appId: string, sender: string): Promise<boolean> {
+  async isAuthorized(appId: string, _sender: string): Promise<boolean> {
     if (!this.contract) {
       logger.warn('AppRegistry not initialized, skipping authorization check');
       return false;
     }
 
     try {
-      const authorized = await this.contract.isAuthorized(appId, sender);
-      logger.debug('AppRegistry authorization check', { 
-        appId: appId.slice(0, 16) + '...',
-        sender,
-        authorized 
+      // Convert appId string to bytes32 using keccak256
+      const appIdBytes32 = ethers.keccak256(ethers.toUtf8Bytes(appId));
+      
+      // Check if app exists and is active
+      const [_appName, owner, active, _registeredAt, _burnedAmount] = await this.contract.getApp(appIdBytes32);
+      
+      // If owner is zero address, app doesn't exist
+      const isRegistered = owner !== ethers.ZeroAddress && active;
+      
+      logger.debug('AppRegistry check', { 
+        appId: appId,
+        appIdBytes32: appIdBytes32.slice(0, 16) + '...',
+        isRegistered,
+        active,
+        owner: owner === ethers.ZeroAddress ? 'not registered' : owner
       });
-      return authorized;
+      
+      return isRegistered;
     } catch (error: any) {
-      logger.error('Failed to check AppRegistry authorization', { 
-        appId: appId.slice(0, 16) + '...',
-        sender,
+      logger.error('Failed to check AppRegistry', { 
+        appId: appId,
         error: error.message 
       });
       // Fail closed - if we can't verify, reject
@@ -74,7 +84,7 @@ class AppRegistryService {
   /**
    * Get app details from the registry
    * 
-   * @param appId - keccak256(appName)
+   * @param appId - App name string (will be converted to bytes32)
    * @returns App details or null if not found
    */
   async getApp(appId: string): Promise<{
@@ -90,7 +100,10 @@ class AppRegistryService {
     }
 
     try {
-      const [appName, owner, active, registeredAt, burnedAmount] = await this.contract.getApp(appId);
+      // Convert appId string to bytes32 using keccak256
+      const appIdBytes32 = ethers.keccak256(ethers.toUtf8Bytes(appId));
+      
+      const [appName, owner, active, registeredAt, burnedAmount] = await this.contract.getApp(appIdBytes32);
       
       // If owner is zero address, app doesn't exist
       if (owner === ethers.ZeroAddress) {
@@ -106,7 +119,7 @@ class AppRegistryService {
       };
     } catch (error: any) {
       logger.error('Failed to get app from AppRegistry', { 
-        appId: appId.slice(0, 16) + '...',
+        appId: appId,
         error: error.message 
       });
       return null;

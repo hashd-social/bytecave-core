@@ -21,7 +21,7 @@ import { HealthResponse, BlobMetadata } from '../types/index.js';
 const VERSION = '1.0.0';
 
 // Track registration state to detect deregistration
-let wasRegisteredOnChain = false;
+let wasRegistered = false;
 
 interface IntegrityCheck {
   checked: number;
@@ -168,7 +168,7 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
 
     // Get public key for contract registration
     let publicKey: string | undefined;
-    let registeredOnChain = false;
+    let isRegistered = false;
     let onChainNodeId: string | undefined;
     try {
       publicKey = proofService.getPublicKey();
@@ -180,12 +180,12 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
         if (contractIntegrationService.isInitialized()) {
           const nodeId = await contractIntegrationService.getNodeByPeerId(peerId);
           if (nodeId) {
-            registeredOnChain = true;
+            isRegistered = true;
             onChainNodeId = nodeId;
           }
           
           // Detect deregistration and trigger cleanup
-          if (wasRegisteredOnChain && !registeredOnChain) {
+          if (wasRegistered && !isRegistered) {
             logger.warn('Node deregistration detected (was registered, now not) - triggering cleanup');
             // Trigger cleanup asynchronously (don't block health response)
             performDeregistrationCleanup().catch(err => 
@@ -193,7 +193,7 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
             );
           }
           // Also check if node has blobs but is not registered (handles restart case)
-          else if (!registeredOnChain && stats.blobCount > 0) {
+          else if (!isRegistered && stats.blobCount > 0) {
             logger.warn('Node has blobs but is not registered on-chain - triggering cleanup');
             // Trigger cleanup asynchronously (don't block health response)
             performDeregistrationCleanup().catch(err => 
@@ -202,7 +202,7 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
           }
           
           // Update registration state
-          wasRegisteredOnChain = registeredOnChain;
+          wasRegistered = isRegistered;
         }
       }
     } catch {
@@ -281,7 +281,7 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
       secp256k1PublicKey: p2pService.isStarted() ? (p2pService.getSecp256k1PublicKey() ?? undefined) : undefined,
       ownerAddress: process.env.OWNER_ADDRESS || undefined,
       hashdBalance,
-      registeredOnChain,
+      isRegistered,
       onChainNodeId,
       lastReplication: 0, // TODO: Track last replication time
       metrics: {

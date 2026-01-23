@@ -451,6 +451,22 @@ async function initializeStorageAuthorization(): Promise<void> {
     );
 
     logger.info('✅ Storage authorization service initialized');
+
+    // Initialize AppRegistry if configured and allowedApps filter is enabled
+    const hasAllowedAppsFilter = config.allowedApps && config.allowedApps.length > 0;
+    if (hasAllowedAppsFilter && config.appRegistryAddress) {
+      logger.info('Initializing AppRegistry service for app authorization...');
+      const { appRegistryService } = await import('./services/app-registry.service.js');
+      await appRegistryService.initialize(rpcUrl, config.appRegistryAddress);
+      logger.info('✅ AppRegistry service initialized', { 
+        contractAddress: config.appRegistryAddress,
+        allowedApps: config.allowedApps 
+      });
+    } else if (hasAllowedAppsFilter && !config.appRegistryAddress) {
+      logger.error('CRITICAL: allowedApps filter is configured but APP_REGISTRY_ADDRESS is not set');
+      logger.error('Storage requests will be rejected without AppRegistry verification');
+      throw new Error('APP_REGISTRY_ADDRESS required when allowedApps filter is configured');
+    }
   } catch (error: any) {
     logger.error('Failed to initialize storage authorization service', error.message);
     throw error; // This is critical - fail startup if authorization can't be initialized

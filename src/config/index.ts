@@ -89,6 +89,7 @@ export const config: Config = {
   // Contract integration - config.json takes precedence
   rpcUrl: getConfigValue(persistedConfig.rpcUrl, process.env.RPC_URL || 'http://127.0.0.1:8545'),
   registryAddress: getConfigValue(persistedConfig.registryAddress, process.env.VAULT_REGISTRY_ADDRESS || ''),
+  appRegistryAddress: getConfigValue(persistedConfig.appRegistryAddress, process.env.APP_REGISTRY_ADDRESS || ''),
   
   // Auto-registration on startup
   autoRegisterOnChain: process.env.REGISTER_ON_CHAIN !== undefined 

@@ -21,6 +21,7 @@ export interface PersistedConfig {
   // Contract Integration
   rpcUrl?: string;
   registryAddress?: string;
+  appRegistryAddress?: string;
   
   // P2P Configuration
   p2pBootstrapPeers: string[];
