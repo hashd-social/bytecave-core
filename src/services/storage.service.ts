@@ -131,6 +131,7 @@ export class StorageService {
       appId?: string;
       sender?: string;
       timestamp?: number;
+      hashIdToken?: number;
       metadata?: Record<string, any>;
       replicationSource?: 'local' | 'replicated';
     }
@@ -192,6 +193,7 @@ export class StorageService {
         appId: options?.appId,
         sender: options?.sender,
         timestamp: options?.timestamp,
+        hashIdToken: options?.hashIdToken,
         replication: options?.fromPeer ? {
           source: options.replicationSource || 'replicated',
           fromPeer: options.fromPeer,

@@ -331,10 +331,24 @@ async start(): Promise<void> {
       const addrs = this.node.getMultiaddrs().map(ma => ma.toString());
       this.emit('started', { peerId, addresses: addrs });
 
+      // Check registration status before connecting to relay
+      const { contractIntegrationService } = await import('./contract-integration.service.js');
+      let isRegistered = false;
+      
+      const isInitialized = contractIntegrationService.isInitialized();
+      if (isInitialized) {
+        try {
+          const nodeIdFromContract = await contractIntegrationService.getNodeByPeerId(peerId);
+          isRegistered = nodeIdFromContract !== null;
+        } catch (err: any) {
+          logger.warn('[P2P] Failed to check registration status for relay connection', { error: err.message });
+        }
+      }
+
       // Connect to relay WebSocket for browser storage requests
       try {
-        await storageWebSocketService.connect(peerId);
-        logger.info('[P2P] Connected to relay WebSocket for storage requests');
+        await storageWebSocketService.connect(peerId, isRegistered);
+        logger.info('[P2P] Connected to relay WebSocket for storage requests', { isRegistered });
       } catch (wsError: any) {
         logger.warn('[P2P] Failed to connect to relay WebSocket', { error: wsError.message });
         // Non-fatal - P2P protocols still work

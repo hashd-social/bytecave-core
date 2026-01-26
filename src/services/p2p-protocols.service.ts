@@ -33,6 +33,7 @@ interface ReplicateRequest {
   appId?: string;
   sender?: string;
   timestamp?: number;
+  hashIdToken?: number;
   authorization?: any; // For browser-to-node storage with signed authorization
 }
 
@@ -532,7 +533,8 @@ class P2PProtocolsService {
       await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
         appId: request.appId,
         sender: request.authorization?.sender,
-        timestamp: request.authorization?.timestamp
+        timestamp: request.authorization?.timestamp,
+        hashIdToken: request.hashIdToken
         // Note: fromPeer is NOT set for browser storage - this is direct storage, not replication
         // fromPeer is only used for node-to-node replication via handleReplicate
       });

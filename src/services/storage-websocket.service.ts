@@ -21,6 +21,7 @@ interface RegisterMessage {
   type: 'register';
   peerId: string;
   nodeId?: string;
+  isRegistered?: boolean;
 }
 
 interface StorageRequestMessage {
@@ -28,6 +29,7 @@ interface StorageRequestMessage {
   requestId: string;
   data: string; // base64 encoded blob
   contentType: string;
+  hashIdToken?: number;
   authorization?: {
     signature: string;
     address: string;
@@ -52,6 +54,7 @@ export class StorageWebSocketService {
   private ws: WebSocket | null = null;
   private relayUrl: string;
   private peerId: string | null = null;
+  private isRegistered: boolean = false;
   private reconnectInterval: number = 5000;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private isConnecting: boolean = false;
@@ -60,7 +63,7 @@ export class StorageWebSocketService {
     this.relayUrl = relayUrl;
   }
 
-  async connect(peerId: string): Promise<void> {
+  async connect(peerId: string, isRegistered?: boolean): Promise<void> {
     if (this.isConnecting || (this.ws && this.ws.readyState === WebSocket.OPEN)) {
       logger.warn('[Storage WS] Already connected or connecting');
       return;
@@ -68,6 +71,7 @@ export class StorageWebSocketService {
 
     this.isConnecting = true;
     this.peerId = peerId;
+    this.isRegistered = isRegistered ?? false;
 
     try {
       logger.info('[Storage WS] Connecting to relay', { url: this.relayUrl });
@@ -114,7 +118,8 @@ export class StorageWebSocketService {
     const message: RegisterMessage = {
       type: 'register',
       peerId: this.peerId,
-      nodeId: config.nodeId
+      nodeId: config.nodeId,
+      isRegistered: this.isRegistered
     };
 
     this.ws.send(JSON.stringify(message));
@@ -135,7 +140,7 @@ export class StorageWebSocketService {
   }
 
   private async handleStorageRequest(message: StorageRequestMessage): Promise<void> {
-    const { requestId, data, contentType, authorization } = message;
+    const { requestId, data, contentType, hashIdToken, authorization } = message;
 
     logger.info('[Storage WS] Received storage request', {
       requestId,
@@ -202,7 +207,8 @@ export class StorageWebSocketService {
       await storageService.storeBlob(contentHash, blobData, contentType, {
         appId: authorization?.appId,
         sender: authorization?.address,
-        timestamp: authorization?.timestamp
+        timestamp: authorization?.timestamp,
+        hashIdToken
       });
 
       // Send success response

@@ -24,6 +24,7 @@ export interface BlobMetadata {
   appId?: string;        // Application identifier - which app stored this
   sender?: string;       // Address that stored this blob
   timestamp?: number;    // When blob was stored
+  hashIdToken?: number;  // HashID NFT token ID used for content attribution
   replication?: {
     source?: 'local' | 'replicated'; // Track if blob was stored locally or received via replication
     fromPeer?: string;
