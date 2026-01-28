@@ -111,8 +111,8 @@ export class StorageAuthorizationService {
         );
 
         try {
-          // Convert CID string to bytes32
-          const cidBytes32 = ethers.keccak256(ethers.toUtf8Bytes(cid));
+          // CID is already a SHA-256 hash (bytes32), just add 0x prefix
+          const cidBytes32 = '0x' + cid;
           const isRegistered = await contentRegistry.isContentRegistered(cidBytes32);
           if (isRegistered) {
             const cacheEntry = { authorized: true, source: 'ContentRegistry', timestamp: Date.now() };

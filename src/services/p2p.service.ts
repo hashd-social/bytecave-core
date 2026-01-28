@@ -512,24 +512,8 @@ async start(): Promise<void> {
       logger.info('Peer disconnected', { peerId: peerId.slice(0, 16) + '...' });
       this.emit('peer:disconnect', peerId);
       
-      // Check if this was a relay peer and schedule reconnection
-      const isRelayPeer = config.p2pRelayPeers.some(addr => addr.includes(peerId));
-      if (isRelayPeer) {
-        logger.info('Relay peer disconnected, scheduling reconnection...', { peerId: peerId.slice(0, 16) + '...' });
-        // Attempt reconnection after 5 seconds
-        setTimeout(async () => {
-          try {
-            const relayAddr = config.p2pRelayPeers.find(addr => addr.includes(peerId));
-            if (relayAddr && this.node) {
-              logger.info('Attempting to reconnect to relay peer', { addr: relayAddr });
-              await this.node.dial(multiaddr(relayAddr));
-              logger.info('Successfully reconnected to relay peer');
-            }
-          } catch (err: any) {
-            logger.warn('Failed to reconnect to relay peer, will retry on next disconnect', { error: err.message });
-          }
-        }, 5000);
-      }
+      // Relay reconnection is handled by WebSocket service
+      // When WebSocket reconnects, it will trigger P2P connection
     });
 
     // Listen for connection upgrades (DCUTR success)
@@ -876,6 +860,7 @@ async start(): Promise<void> {
         peerId: this.node.peerId.toString(),
         publicKey: this.secp256k1PublicKey || '', // secp256k1 public key for contract verification
         nodeId: config.nodeId,
+        nodeUrl: config.nodeUrl, // HTTP endpoint for registration signature requests
         availableStorage: config.gcMaxStorageMB * 1024 * 1024,
         blobCount: 0,
         timestamp: Date.now(),
@@ -1006,6 +991,24 @@ async start(): Promise<void> {
     } catch (error) {
       logger.error('Failed to sign message', { error });
       return null;
+    }
+  }
+
+  /**
+   * Connect to relay peer via P2P libp2p
+   * Called by WebSocket service when WebSocket connection succeeds
+   */
+  async connectToRelayPeer(): Promise<void> {
+    if (!this.node || config.p2pRelayPeers.length === 0) return;
+    
+    for (const relayAddr of config.p2pRelayPeers) {
+      try {
+        logger.info('Connecting to relay peer via P2P', { addr: relayAddr });
+        await this.node.dial(multiaddr(relayAddr));
+        logger.info('Successfully connected to relay peer via P2P');
+      } catch (err: any) {
+        logger.warn('Failed to connect to relay peer via P2P', { error: err.message });
+      }
     }
   }
 

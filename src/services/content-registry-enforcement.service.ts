@@ -45,10 +45,18 @@ export class ContentRegistryEnforcementService {
       const hasAllowedAppsFilter = allowedApps && allowedApps.length > 0;
       
       if (hasAllowedAppsFilter && requestAppId) {
-        if (!allowedApps.includes(requestAppId)) {
+        // Check if requestAppId matches either the string or bytes32 hash
+        // allowedApps contains strings like "hashd", but requestAppId might be bytes32 hash
+        const { appIdsToBytes32 } = await import('../utils/content-registry.js');
+        const allowedAppHashes = appIdsToBytes32(allowedApps);
+        
+        const isAllowed = allowedApps.includes(requestAppId) || allowedAppHashes.includes(requestAppId);
+        
+        if (!isAllowed) {
           logger.debug('App allowlist check failed', { 
             requestAppId, 
-            allowedApps 
+            allowedApps,
+            allowedAppHashes
           });
           return {
             authorized: false,
@@ -56,7 +64,11 @@ export class ContentRegistryEnforcementService {
             error: `App '${requestAppId}' not in node's allowed list`
           };
         }
-        logger.debug('App allowlist check passed', { requestAppId });
+        logger.debug('App allowlist check passed', { 
+          requestAppId,
+          matchedString: allowedApps.includes(requestAppId),
+          matchedHash: allowedAppHashes.includes(requestAppId)
+        });
       }
 
       // STEP 2: MANDATORY - Verify content is registered in ContentRegistry

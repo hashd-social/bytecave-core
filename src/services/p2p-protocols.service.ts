@@ -18,7 +18,6 @@ import { config } from '../config/index.js';
 
 // Protocol identifiers
 export const PROTOCOL_REPLICATE = '/bytecave/replicate/1.0.0';
-export const PROTOCOL_STORE = '/bytecave/store/1.0.0'; // Browser-to-node storage with authorization
 export const PROTOCOL_BLOB = '/bytecave/blob/1.0.0';
 export const PROTOCOL_HEALTH = '/bytecave/health/1.0.0';
 export const PROTOCOL_INFO = '/bytecave/info/1.0.0';
@@ -116,23 +115,28 @@ class P2PProtocolsService {
     this.node = node;
 
     // Register protocol handlers - signature is (stream: Stream, connection: Connection)
-    node.handle(PROTOCOL_REPLICATE, (stream: Stream, connection: Connection) => 
-      this.handleReplicate(stream, connection));
-    node.handle(PROTOCOL_STORE, (stream: Stream, connection: Connection) => 
-      this.handleStore(stream, connection));
-    node.handle(PROTOCOL_BLOB, (stream: Stream, connection: Connection) => 
-      this.handleBlob(stream, connection));
-    node.handle(PROTOCOL_HEALTH, (stream: Stream, connection: Connection) => 
-      this.handleHealth(stream, connection));
-    node.handle(PROTOCOL_INFO, (stream: Stream, connection: Connection) => 
-      this.handleInfo(stream, connection));
-    node.handle(PROTOCOL_HAVE_LIST, (stream: Stream, connection: Connection) => 
-      this.handleHaveList(stream, connection));
-    node.handle(PROTOCOL_HAVE_CID, (stream: Stream, connection: Connection) => 
-      this.handleHaveCid(stream, connection));
+    // IMPORTANT: Handlers are async, must be properly awaited to catch errors
+    node.handle(PROTOCOL_REPLICATE, async (stream: Stream, connection: Connection) => {
+      await this.handleReplicate(stream, connection);
+    });
+    node.handle(PROTOCOL_BLOB, async (stream: Stream, connection: Connection) => {
+      await this.handleBlob(stream, connection);
+    });
+    node.handle(PROTOCOL_HEALTH, async (stream: Stream, connection: Connection) => {
+      await this.handleHealth(stream, connection);
+    });
+    node.handle(PROTOCOL_INFO, async (stream: Stream, connection: Connection) => {
+      await this.handleInfo(stream, connection);
+    });
+    node.handle(PROTOCOL_HAVE_LIST, async (stream: Stream, connection: Connection) => {
+      await this.handleHaveList(stream, connection);
+    });
+    node.handle(PROTOCOL_HAVE_CID, async (stream: Stream, connection: Connection) => {
+      await this.handleHaveCid(stream, connection);
+    });
 
     logger.info('P2P protocols registered', {
-      protocols: [PROTOCOL_REPLICATE, PROTOCOL_STORE, PROTOCOL_BLOB, PROTOCOL_HEALTH, PROTOCOL_INFO, PROTOCOL_HAVE_LIST, PROTOCOL_HAVE_CID]
+      protocols: [PROTOCOL_REPLICATE, PROTOCOL_BLOB, PROTOCOL_HEALTH, PROTOCOL_INFO, PROTOCOL_HAVE_LIST, PROTOCOL_HAVE_CID]
     });
   }
 
@@ -143,7 +147,6 @@ class P2PProtocolsService {
     if (!this.node) return;
 
     this.node.unhandle(PROTOCOL_REPLICATE);
-    this.node.unhandle(PROTOCOL_STORE);
     this.node.unhandle(PROTOCOL_BLOB);
     this.node.unhandle(PROTOCOL_HEALTH);
     this.node.unhandle(PROTOCOL_INFO);
@@ -164,7 +167,10 @@ class P2PProtocolsService {
    */
   private async handleReplicate(stream: Stream, connection: Connection): Promise<void> {
     const remotePeer = connection.remotePeer.toString();
-    logger.debug('Handling replicate request', { from: remotePeer });
+    logger.info('[P2P-PROTOCOLS] ⚡ handleReplicate called', { 
+      from: remotePeer.slice(0, 12),
+      streamStatus: stream.status 
+    });
 
     try {
       // Import config once at the top
@@ -174,7 +180,8 @@ class P2PProtocolsService {
       const { blockedContentService } = await import('./blocked-content.service.js');
       if (await blockedContentService.isPeerBlocked(remotePeer)) {
         logger.warn('Replication rejected: Peer is blocked', { peerId: remotePeer });
-        await this.writeMessage(stream, { success: false, error: 'Peer blocked' });
+        this.writeMessage(stream, { success: false, error: 'Peer blocked' });
+        await stream.close();
         return;
       }
 
@@ -189,7 +196,8 @@ class P2PProtocolsService {
           logger.warn('Replication rejected: Peer not registered in VaultNodeRegistry', { 
             peerId: remotePeer.slice(0, 12) + '...'
           });
-          await this.writeMessage(stream, { success: false, error: 'Peer not authorized' });
+          this.writeMessage(stream, { success: false, error: 'Peer not authorized' });
+          await stream.close();
           return;
         }
         
@@ -200,7 +208,8 @@ class P2PProtocolsService {
             peerId: remotePeer.slice(0, 12) + '...',
             nodeId: nodeId.slice(0, 16) + '...'
           });
-          await this.writeMessage(stream, { success: false, error: 'Peer not authorized' });
+          this.writeMessage(stream, { success: false, error: 'Peer not authorized' });
+          await stream.close();
           return;
         }
         
@@ -216,7 +225,8 @@ class P2PProtocolsService {
       const request = await this.readMessage<ReplicateRequest>(stream);
       
       if (!request || !request.cid || !request.ciphertext) {
-        await this.writeMessage(stream, { success: false, error: 'Invalid request' });
+        this.writeMessage(stream, { success: false, error: 'Invalid request' });
+        await stream.close();
         return;
       }
 
@@ -229,17 +239,19 @@ class P2PProtocolsService {
           cid: request.cid, 
           from: remotePeer 
         });
-        await this.writeMessage(stream, { 
+        this.writeMessage(stream, { 
           success: false, 
           error: `File size (${sizeMB}MB) exceeds maximum allowed size of 5MB` 
         });
+        await stream.close();
         return;
       }
 
       // SECURITY CHECK 4: Verify CID is not blocked
       if (await blockedContentService.isBlocked(request.cid)) {
         logger.warn('Replication rejected: CID is blocked', { cid: request.cid, from: remotePeer });
-        await this.writeMessage(stream, { success: false, error: 'Content blocked' });
+        this.writeMessage(stream, { success: false, error: 'Content blocked' });
+        await stream.close();
         return;
       }
 
@@ -251,7 +263,8 @@ class P2PProtocolsService {
           cid: request.cid, 
           from: remotePeer 
         });
-        await this.writeMessage(stream, { success: false, error: 'CID verification failed' });
+        this.writeMessage(stream, { success: false, error: 'CID verification failed' });
+        await stream.close();
         return;
       }
 
@@ -275,21 +288,21 @@ class P2PProtocolsService {
           requestAppId: request.appId,
           registeredAppId: verification.appId
         });
-        await this.writeMessage(stream, { 
+        this.writeMessage(stream, { 
           success: false, 
           error: verification.error || 'Content not authorized' 
         });
+        await stream.close();
         return;
       }
       
-      // Update request.appId with the verified appId from ContentRegistry
-      if (verification.appId) {
-        request.appId = verification.appId;
-      }
+      // Note: We keep the original request.appId (string like "hashd") for allowlist checking
+      // ContentRegistry returns bytes32 hash which won't match node allowlists
       
       logger.debug('✅ Content authorization verified', { 
         cid: request.cid, 
-        appId: verification.appId,
+        requestAppId: request.appId,
+        registryAppId: verification.appId,
         hasAllowlist: allowedApps !== undefined
       });
       
@@ -304,10 +317,11 @@ class P2PProtocolsService {
           from: remotePeer,
           error: onChainVerification.error
         });
-        await this.writeMessage(stream, { 
+        this.writeMessage(stream, { 
           success: false, 
           error: 'CID not registered in ContentRegistry' 
         });
+        await stream.close();
         return;
       }
       
@@ -322,10 +336,11 @@ class P2PProtocolsService {
           cid: request.cid, 
           from: remotePeer
         });
-        await this.writeMessage(stream, { 
+        this.writeMessage(stream, { 
           success: false, 
           error: 'Missing sender metadata' 
         });
+        await stream.close();
         return;
       }
 
@@ -333,7 +348,8 @@ class P2PProtocolsService {
       const exists = await storageService.hasBlob(request.cid);
       if (exists) {
         logger.debug('Blob already stored', { cid: request.cid });
-        await this.writeMessage(stream, { success: true, alreadyStored: true });
+        this.writeMessage(stream, { success: true, alreadyStored: true });
+        await stream.close();
         return;
       }
 
@@ -352,224 +368,20 @@ class P2PProtocolsService {
         from: remotePeer,
         sender: request.sender
       });
-      await this.writeMessage(stream, { success: true });
+      this.writeMessage(stream, { success: true });
+      await stream.close();
 
     } catch (error: any) {
       logger.error('Replicate handler error', { error: error.message });
+      this.writeMessage(stream, { success: false, error: error.message });
       try {
-        await this.writeMessage(stream, { success: false, error: error.message });
+        await stream.close();
       } catch {
-        // Stream may be closed
+        // Stream already closed
       }
     }
   }
 
-  /**
-   * Handle incoming storage request from browser (with authorization)
-   * This protocol accepts storage requests from browsers with signed authorization
-   */
-  private async handleStore(stream: Stream, connection: Connection): Promise<void> {
-    const remotePeer = connection.remotePeer.toString();
-
-    try {
-      // Read the request
-      const request = await this.readMessage<ReplicateRequest>(stream);
-      
-      if (!request || !request.cid || !request.ciphertext) {
-        await this.writeMessage(stream, { success: false, error: 'Invalid request' });
-        return;
-      }
-
-      // Validate file size (5MB limit)
-      const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB in bytes
-      const ciphertextSize = Buffer.from(request.ciphertext, 'base64').length;
-      if (ciphertextSize > MAX_FILE_SIZE) {
-        const sizeMB = (ciphertextSize / (1024 * 1024)).toFixed(2);
-        await this.writeMessage(stream, { 
-          success: false, 
-          error: `File size (${sizeMB}MB) exceeds maximum allowed size of 5MB` 
-        });
-        return;
-      }
-
-      // Check if this node is registered on-chain (only registered nodes accept storage)
-      const { contractIntegrationService } = await import('./contract-integration.service.js');
-      
-      if (contractIntegrationService.isInitialized()) {
-        try {
-          // Get this node's secp256k1 public key (the one used for registration)
-          const { p2pService } = await import('./p2p.service.js');
-          
-          if (!p2pService.isStarted()) {
-            logger.warn('Store rejected: P2P service not started', { cid: request.cid });
-            await this.writeMessage(stream, { 
-              success: false, 
-              error: 'Node not ready (P2P not started)' 
-            });
-            return;
-          }
-
-          // Get the 64-byte uncompressed secp256k1 public key (same as used for registration)
-          const secp256k1PublicKey = p2pService.getSecp256k1PublicKey();
-          
-          if (!secp256k1PublicKey) {
-            logger.warn('Store rejected: No secp256k1 public key available', { cid: request.cid });
-            await this.writeMessage(stream, { 
-              success: false, 
-              error: 'Node not configured properly (no secp256k1 public key)' 
-            });
-            return;
-          }
-
-          // Calculate nodeId using the centralized helper function
-          const { calculateNodeId } = await import('../utils/node-id.js');
-          const nodeId = calculateNodeId(secp256k1PublicKey);
-          
-          // Check if this nodeId is registered on-chain
-          const registeredNode = await contractIntegrationService.getNode(nodeId);
-          
-          if (!registeredNode || !registeredNode.active) {
-            logger.warn('Store rejected: Node not registered or not active on-chain', { 
-              cid: request.cid, 
-              nodeId: nodeId.slice(0, 10) + '...',
-              hasNode: !!registeredNode,
-              active: registeredNode?.active 
-            });
-            await this.writeMessage(stream, { 
-              success: false, 
-              error: 'Node not registered on-chain. Only registered nodes accept storage.' 
-            });
-            return;
-          }
-
-          logger.info('Node registration verified', { 
-            nodeId: nodeId.slice(0, 10) + '...', 
-            publicKey: secp256k1PublicKey.slice(0, 20) + '...',
-            active: registeredNode.active 
-          });
-        } catch (error: any) {
-          logger.warn('Store rejected: Could not verify node registration', { 
-            cid: request.cid, 
-            error: error.message 
-          });
-          await this.writeMessage(stream, { 
-            success: false, 
-            error: 'Could not verify node registration' 
-          });
-          return;
-        }
-      } else {
-        // Contract integration not initialized - reject to be safe
-        logger.warn('Store rejected: Contract integration not initialized', { cid: request.cid });
-        await this.writeMessage(stream, { 
-          success: false, 
-          error: 'Node not configured for on-chain verification' 
-        });
-        return;
-      }
-
-      // Import config for app filtering
-      const { config } = await import('../config/index.js');
-      const hasAllowedAppsFilter = config.allowedApps && config.allowedApps.length > 0;
-      
-      // Verify authorization (always required for browser storage)
-      if (request.authorization) {
-        const { storageAuthorizationService } = await import('./storage-authorization.service.js');
-        
-        // Verify the authorization signature
-        const result = await storageAuthorizationService.verifyAuthorization(
-          request.authorization,
-          request.authorization.contentHash
-        );
-
-        if (!result.authorized) {
-          logger.warn('Store rejected: Invalid authorization signature', { 
-            cid: request.cid,
-            sender: request.authorization.sender,
-            reason: result.error 
-          });
-          await this.writeMessage(stream, { success: false, error: result.error || 'Invalid authorization' });
-          return;
-        }
-
-        // If node has app filter, verify appId is in allowed list
-        if (hasAllowedAppsFilter && request.appId) {
-          if (!config.allowedApps.includes(request.appId)) {
-            logger.warn('Store rejected: App not in allowed list', { 
-              cid: request.cid,
-              appId: request.appId,
-              allowedApps: config.allowedApps
-            });
-            await this.writeMessage(stream, { 
-              success: false, 
-              error: `App '${request.appId}' not authorized on this node` 
-            });
-            return;
-          }
-        }
-
-        logger.debug('Browser storage authorization verified', { 
-          cid: request.cid, 
-          sender: request.authorization.sender,
-          appId: request.appId 
-        });
-      } else {
-        // No authorization provided - reject
-        logger.warn('Store rejected: No authorization provided', { cid: request.cid });
-        await this.writeMessage(stream, { success: false, error: 'Authorization required' });
-        return;
-      }
-
-      // Check if we already have this blob
-      const exists = await storageService.hasBlob(request.cid);
-      if (exists) {
-        logger.debug('Blob already stored', { cid: request.cid });
-        await this.writeMessage(stream, { success: true, alreadyStored: true });
-        return;
-      }
-
-      // Store the blob with metadata
-      const ciphertext = Buffer.from(request.ciphertext, 'base64');
-      await storageService.storeBlob(request.cid, ciphertext, request.mimeType, {
-        appId: request.appId,
-        sender: request.authorization?.sender,
-        timestamp: request.authorization?.timestamp,
-        hashIdToken: request.hashIdToken
-        // Note: fromPeer is NOT set for browser storage - this is direct storage, not replication
-        // fromPeer is only used for node-to-node replication via handleReplicate
-      });
-
-      logger.info('Blob stored from browser via P2P', { 
-        cid: request.cid, 
-        from: remotePeer,
-        sender: request.authorization?.sender
-      });
-      
-      // Trigger replication to other nodes (async, don't wait)
-      const { replicationService } = await import('./replication.service.js');
-      replicationService.replicateToAll(request.cid, ciphertext, request.mimeType, {
-        appId: request.appId,
-        sender: request.authorization?.sender,
-        timestamp: request.authorization?.timestamp
-      }).catch((err: any) => {
-        logger.warn('Replication failed for browser-stored blob', { 
-          cid: request.cid, 
-          error: err.message 
-        });
-      });
-      
-      await this.writeMessage(stream, { success: true });
-
-    } catch (error: any) {
-      console.error('[P2P Store] ERROR in handleStore:', error.message, error.stack);
-      logger.error('Store handler error', { error: error.message });
-      try {
-        await this.writeMessage(stream, { success: false, error: error.message });
-      } catch {
-        // Stream may be closed
-      }
-    }
-  }
 
   /**
    * Handle incoming blob retrieval request
@@ -582,7 +394,7 @@ class P2PProtocolsService {
       const request = await this.readMessage<BlobRequest>(stream);
       
       if (!request || !request.cid) {
-        await this.writeMessage(stream, { success: false, error: 'Invalid request' });
+        this.writeMessage(stream, { success: false, error: 'Invalid request' });
         await stream.close();
         return;
       }
@@ -596,21 +408,21 @@ class P2PProtocolsService {
           mimeType: blob.metadata.mimeType
         };
 
-        await this.writeMessage(stream, response);
+        this.writeMessage(stream, response);
         await stream.close();
         logger.debug('Blob served via P2P', { cid: request.cid, to: remotePeer });
       } catch (err: any) {
-        await this.writeMessage(stream, { success: false, error: 'Blob not found' });
+        this.writeMessage(stream, { success: false, error: 'Blob not found' });
         await stream.close();
       }
 
     } catch (error: any) {
       logger.error('Blob handler error', { error: error.message });
+      this.writeMessage(stream, { success: false, error: error.message });
       try {
-        await this.writeMessage(stream, { success: false, error: error.message });
         await stream.close();
       } catch {
-        // Stream may be closed
+        // Stream already closed
       }
     }
   }
@@ -691,13 +503,16 @@ class P2PProtocolsService {
         onChainNodeId
       });
 
-      await this.writeMessage(stream, response);
-      
-      // Close the stream to signal we're done
+      this.writeMessage(stream, response);
       await stream.close();
 
     } catch (error: any) {
       logger.error('Health handler error', { error: error.message, stack: error.stack });
+      try {
+        await stream.close();
+      } catch {
+        // Stream already closed
+      }
     }
   }
 
@@ -720,10 +535,16 @@ class P2PProtocolsService {
         version: '1.0.0'
       };
 
-      await this.writeMessage(stream, response);
+      this.writeMessage(stream, response);
+      await stream.close();
 
     } catch (error: any) {
       logger.error('Info handler error', { error: error.message });
+      try {
+        await stream.close();
+      } catch {
+        // Stream already closed
+      }
     }
   }
 
@@ -738,12 +559,14 @@ class P2PProtocolsService {
       const request = await this.readMessage<{ cid: string }>(stream);
       
       if (!request?.cid) {
-        await this.writeMessage(stream, { has: false });
+        this.writeMessage(stream, { has: false });
+        await stream.close();
         return;
       }
 
       const hasBlob = await storageService.hasBlob(request.cid);
-      await this.writeMessage(stream, { has: hasBlob });
+      this.writeMessage(stream, { has: hasBlob });
+      await stream.close();
       
       logger.debug('Have-cid response sent', { 
         to: remotePeer, 
@@ -752,10 +575,11 @@ class P2PProtocolsService {
       });
     } catch (error: any) {
       logger.error('Have-cid handler error', { error: error.message });
+      this.writeMessage(stream, { has: false });
       try {
-        await this.writeMessage(stream, { has: false });
+        await stream.close();
       } catch {
-        // Stream may be closed
+        // Stream already closed
       }
     }
   }
@@ -792,7 +616,8 @@ class P2PProtocolsService {
           hasMore: false
         };
 
-        await this.writeMessage(stream, response);
+        this.writeMessage(stream, response);
+        await stream.close();
         logger.debug('Sent have-list response for specific CIDs', { 
           to: remotePeer, 
           requested: request.cids.length,
@@ -817,11 +642,17 @@ class P2PProtocolsService {
         hasMore
       };
 
-      await this.writeMessage(stream, response);
+      this.writeMessage(stream, response);
+      await stream.close();
       logger.debug('Sent have-list to peer', { to: remotePeer, count: cids.length, total });
 
     } catch (error: any) {
       logger.error('Have-list handler error', { error: error.message });
+      try {
+        await stream.close();
+      } catch {
+        // Stream already closed
+      }
     }
   }
 
@@ -885,12 +716,28 @@ class P2PProtocolsService {
         timestamp: options?.timestamp
       };
 
-      logger.debug('[P2P-PROTOCOLS] Replication request details', {
-        cid,
-        appId: request.appId
+      logger.info('[P2P-PROTOCOLS] 🔍 Replication request constructed', {
+        cid: cid.slice(0, 16) + '...',
+        appId: request.appId,
+        appIdType: typeof request.appId,
+        appIdLength: request.appId?.length,
+        optionsAppId: options?.appId,
+        optionsAppIdType: typeof options?.appId
       });
 
-      await this.writeMessage(stream, request);
+      const writeSuccess = this.writeMessage(stream, request);
+      if (!writeSuccess) {
+        logger.debug('[P2P-PROTOCOLS] Failed to write replication request - stream closed', {
+          peerId: peerId.slice(0, 12),
+          cid
+        });
+        // Close stream if still open
+        if (stream.status !== 'closed') {
+          await stream.close();
+        }
+        return false;
+      }
+
       logger.info('[P2P-PROTOCOLS] Request sent, waiting for response', {
         peerId: peerId.slice(0, 12),
         cid
@@ -1139,21 +986,40 @@ class P2PProtocolsService {
 
   /**
    * Write a JSON message to a stream using custom length-prefixed framing
+   * @returns true if write succeeded, false if stream is closed or write failed
    */
-  private async writeMessage(stream: Stream, message: any): Promise<void> {
-    const data = new TextEncoder().encode(JSON.stringify(message));
+  private writeMessage(stream: any, message: any): boolean {
+    // Check if stream is writable before attempting to write
+    if (stream.status === 'closed' || stream.status === 'closing') {
+      logger.debug('Cannot write to stream - stream is closed or closing');
+      return false;
+    }
     
-    // Create length prefix (4 bytes, big-endian)
+    const json = JSON.stringify(message);
+    const data = new TextEncoder().encode(json);
+    
+    // Create 4-byte length prefix (big-endian)
     const lengthPrefix = new Uint8Array(4);
-    new DataView(lengthPrefix.buffer).setUint32(0, data.length, false);
+    const view = new DataView(lengthPrefix.buffer);
+    view.setUint32(0, data.length, false); // false = big-endian
     
     // Combine length prefix and data
     const combined = new Uint8Array(lengthPrefix.length + data.length);
     combined.set(lengthPrefix, 0);
     combined.set(data, lengthPrefix.length);
     
-    // Write to stream using send() method
-    stream.send(combined);
+    // Write to stream in chunks to avoid buffer overflow on large messages
+    const CHUNK_SIZE = 16384; // 16KB chunks
+    try {
+      for (let offset = 0; offset < combined.length; offset += CHUNK_SIZE) {
+        const chunk = combined.subarray(offset, Math.min(offset + CHUNK_SIZE, combined.length));
+        stream.send(chunk);
+      }
+      return true;
+    } catch (error: any) {
+      logger.debug('Stream write failed', { error: error.message });
+      return false;
+    }
   }
 }
 

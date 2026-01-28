@@ -82,20 +82,24 @@ export class ReplicationService {
    */
   private setupPeerConnectionListener(): void {
     p2pService.on('peer:connect', async (peerId: string) => {
-      logger.info('[REPLICATION] New peer connected, checking for under-replicated blobs', { 
+      logger.info('[REPLICATION] New peer connected, triggering bidirectional sync', { 
         peerId: peerId.slice(0, 16) + '...' 
       });
       
       // Wait a bit for the peer to fully connect and announce capabilities
       setTimeout(async () => {
         try {
+          // Push: Check if our blobs are under-replicated and push to new peer
           await this.checkReplicationHealth();
+          
+          // Pull: Check if new peer has blobs we're missing and pull them
+          await this.pullMissingBlobs();
         } catch (error: any) {
-          logger.warn('[REPLICATION] Failed to check replication health after peer connection', { 
+          logger.warn('[REPLICATION] Failed to sync after peer connection', { 
             error: error.message 
           });
         }
-      }, 5000); // 5 second delay
+      }, 1000); // 1 second delay - reduced for faster replication
     });
   }
 

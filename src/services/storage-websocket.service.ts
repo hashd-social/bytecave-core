@@ -48,7 +48,22 @@ interface StorageResponseMessage {
   error?: string;
 }
 
-type Message = RegisterMessage | StorageRequestMessage | StorageResponseMessage;
+interface RetrieveRequestMessage {
+  type: 'retrieve-request';
+  requestId: string;
+  cid: string;
+}
+
+interface RetrieveResponseMessage {
+  type: 'retrieve-response';
+  requestId: string;
+  success: boolean;
+  data?: string; // base64
+  mimeType?: string;
+  error?: string;
+}
+
+type Message = RegisterMessage | StorageRequestMessage | StorageResponseMessage | RetrieveRequestMessage | RetrieveResponseMessage;
 
 export class StorageWebSocketService {
   private ws: WebSocket | null = null;
@@ -56,8 +71,11 @@ export class StorageWebSocketService {
   private peerId: string | null = null;
   private isRegistered: boolean = false;
   private reconnectInterval: number = 5000;
+  private maxReconnectInterval: number = 60000;
+  private currentReconnectInterval: number = 5000;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private isConnecting: boolean = false;
+  private shouldReconnect: boolean = true;
 
   constructor(relayUrl: string) {
     this.relayUrl = relayUrl;
@@ -77,10 +95,15 @@ export class StorageWebSocketService {
       logger.info('[Storage WS] Connecting to relay', { url: this.relayUrl });
       this.ws = new WebSocket(this.relayUrl);
 
-      this.ws.on('open', () => {
+      this.ws.on('open', async () => {
         this.isConnecting = false;
+        this.currentReconnectInterval = this.reconnectInterval; // Reset backoff on successful connection
         logger.info('[Storage WS] Connected to relay');
         this.register();
+        
+        // Trigger P2P libp2p connection to relay
+        const { p2pService } = await import('./p2p.service.js');
+        await p2pService.connectToRelayPeer();
       });
 
       this.ws.on('message', (data: Buffer) => {
@@ -94,8 +117,13 @@ export class StorageWebSocketService {
 
       this.ws.on('close', () => {
         this.isConnecting = false;
-        logger.warn('[Storage WS] Connection closed, will reconnect...');
-        this.scheduleReconnect();
+        this.ws = null;
+        if (this.shouldReconnect) {
+          logger.warn('[Storage WS] Connection closed, will reconnect in', { delay: this.currentReconnectInterval });
+          this.scheduleReconnect();
+        } else {
+          logger.info('[Storage WS] Connection closed, reconnection disabled');
+        }
       });
 
       this.ws.on('error', (error: Error) => {
@@ -131,7 +159,11 @@ export class StorageWebSocketService {
       case 'storage-request':
         this.handleStorageRequest(message);
         break;
+      case 'retrieve-request':
+        this.handleRetrieveRequest(message);
+        break;
       case 'storage-response':
+      case 'retrieve-response':
         // We don't expect responses as a storage node
         break;
       default:
@@ -203,6 +235,24 @@ export class StorageWebSocketService {
         }
       }
 
+      // SECURITY CHECK: Verify CID is registered in ContentRegistry
+      // This ensures only on-chain registered content can be stored
+      const onChainVerification = await storageAuthorizationService.verifyCIDOnChain(contentHash);
+      
+      if (!onChainVerification.authorized) {
+        logger.warn('[Storage WS] Store rejected: CID not registered in ContentRegistry', { 
+          cid: contentHash, 
+          sender: authorization?.address,
+          error: onChainVerification.error
+        });
+        throw new Error('Content must be registered in ContentRegistry before storage');
+      }
+      
+      logger.debug('[Storage WS] ✅ ContentRegistry verification passed', { 
+        cid: contentHash,
+        source: onChainVerification.source
+      });
+
       // Store the blob
       await storageService.storeBlob(contentHash, blobData, contentType, {
         appId: authorization?.appId,
@@ -237,7 +287,51 @@ export class StorageWebSocketService {
     }
   }
 
-  private sendResponse(message: StorageResponseMessage): void {
+  private async handleRetrieveRequest(message: RetrieveRequestMessage): Promise<void> {
+    const { requestId, cid } = message;
+
+    logger.info('[Storage WS] Received retrieve request', { requestId, cid: cid.slice(0, 16) });
+
+    try {
+      // Retrieve the blob from storage
+      const blob = await storageService.getBlob(cid);
+
+      if (!blob) {
+        throw new Error('Blob not found');
+      }
+
+      // Convert blob ciphertext to base64
+      const base64Data = blob.ciphertext.toString('base64');
+
+      // Send success response
+      this.sendResponse({
+        type: 'retrieve-response',
+        requestId,
+        success: true,
+        data: base64Data,
+        mimeType: blob.metadata.mimeType || 'application/octet-stream'
+      });
+
+      logger.info('[Storage WS] Retrieval successful', {
+        requestId,
+        cid: cid.slice(0, 16),
+        size: blob.ciphertext.length
+      });
+
+    } catch (error: any) {
+      logger.error('[Storage WS] Retrieval failed', { error: error.message, cid: cid.slice(0, 16) });
+
+      // Send error response
+      this.sendResponse({
+        type: 'retrieve-response',
+        requestId,
+        success: false,
+        error: error.message
+      });
+    }
+  }
+
+  private sendResponse(message: StorageResponseMessage | RetrieveResponseMessage): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       logger.error('[Storage WS] Cannot send response, WebSocket not open');
       return;
@@ -251,20 +345,28 @@ export class StorageWebSocketService {
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer) {
+    if (this.reconnectTimer || !this.shouldReconnect) {
       return;
     }
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (this.peerId) {
-        logger.info('[Storage WS] Attempting to reconnect...');
-        this.connect(this.peerId);
+      if (this.peerId && this.shouldReconnect) {
+        logger.info('[Storage WS] Attempting to reconnect...', { attempt: Math.floor(this.currentReconnectInterval / 1000) + 's delay' });
+        this.connect(this.peerId, this.isRegistered);
+        
+        // Exponential backoff: double the interval up to max
+        this.currentReconnectInterval = Math.min(
+          this.currentReconnectInterval * 2,
+          this.maxReconnectInterval
+        );
       }
-    }, this.reconnectInterval);
+    }, this.currentReconnectInterval);
   }
 
   disconnect(): void {
+    this.shouldReconnect = false;
+    
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

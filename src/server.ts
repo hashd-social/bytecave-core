@@ -7,6 +7,9 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { config, validateConfig } from './config/index.js';
 import { logger } from './utils/logger.js';
 import { storageService } from './services/storage.service.js';
@@ -84,6 +87,12 @@ import { p2pService } from './services/p2p.service.js';
 
 const app = express();
 
+// Get version from package.json
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const packageJson = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8'));
+const VERSION = packageJson.version;
+
 /**
  * Middleware
  */
@@ -140,9 +149,9 @@ app.disable('x-powered-by');
  */
 
 // REMOVED: /store and /replicate HTTP endpoints - legacy, insecure
-// Storage now only via P2P protocols:
-// - /bytecave/store/1.0.0 (browser → node with authorization)
-// - /bytecave/replicate/1.0.0 (node → node with peer verification)
+// Storage now only via:
+// - WebSocket relay (browser → node with authorization and ContentRegistry verification)
+// - /bytecave/replicate/1.0.0 P2P protocol (node → node with peer verification)
 
 // Read endpoints
 app.get('/blob/:cid', readLimiter, blobHandler);
@@ -215,7 +224,7 @@ app.get('/network/stats', readLimiter, networkStatsHandler);
 app.get('/', (_req, res) => {
   res.json({
     service: 'ByteCave',
-    version: '1.0.0',
+    version: VERSION,
     status: 'online',
     endpoints: {
       store: 'POST /store',
@@ -327,7 +336,7 @@ async function initializeP2P(): Promise<void> {
       } catch (error: any) {
         logger.warn('Failed to replicate existing blobs on startup', { error: error.message });
       }
-    }, 15000); // Wait 15 seconds for peers to connect
+    }, 5000); // Wait 5 seconds for peers to connect - reduced for faster replication
   } catch (error) {
     logger.error('Failed to start P2P service', error);
     // Don't fail startup - P2P is optional, HTTP still works

@@ -17,7 +17,8 @@ Decentralized storage node for the ByteCave network. Provides encrypted blob sto
 - **Auto-Registration** - Automatic registration on startup when enabled
 - **Auto-Deregistration** - Automatic deregistration when REGISTER_ON_CHAIN=false
 - **File Size Limits** - 5MB maximum file size enforced across all storage and replication paths
-- **Chunked Message Sending** - Large messages (>64KB) automatically sent in chunks to prevent buffer overflow
+- **Chunked Message Transmission** - Large messages automatically sent in 16KB chunks to prevent stream buffer overflow
+- **Async Protocol Handlers** - All P2P protocol handlers properly await async operations for reliable error handling
 - **Standardized Metadata** - Type-safe blob metadata with ContentType enum and ReplicationMetadata interface
 
 ## Cryptographic Keys & Security Model
@@ -440,6 +441,76 @@ Node → Connects to Relay
 - `/bytecave/health/1.0.0` - Health checks (P2P, no HTTP required)
 - `/bytecave/info/1.0.0` - Node info for registration
 
+### Replication Architecture
+
+ByteCave uses **bidirectional replication** with both push and pull mechanisms to ensure data redundancy across the network.
+
+#### Push Replication (Existing nodes → New nodes)
+
+When a new peer connects, existing nodes automatically push under-replicated blobs:
+
+**Trigger:** `peer:connect` event  
+**Delay:** 1 second (allows peer to fully establish connection)  
+**Process:**
+1. Existing node detects new peer connection
+2. Checks all locally-stored blobs for replication status
+3. Queries network to count existing replicas
+4. Pushes blobs that are below replication factor to new peer
+
+**Implementation:**
+```typescript
+p2pService.on('peer:connect', async (peerId: string) => {
+  setTimeout(async () => {
+    // Check if our blobs are under-replicated
+    await replicationService.checkReplicationHealth();
+  }, 1000);
+});
+```
+
+#### Pull Replication (New nodes ← Existing nodes)
+
+When a node connects to the network, it actively pulls missing blobs from peers:
+
+**Trigger:** `peer:connect` event + periodic refresh (60 seconds)  
+**Delay:** 1 second (same as push for bidirectional sync)  
+**Process:**
+1. New node connects to network
+2. Queries each peer for their blob list via `/bytecave/have-list/1.0.0`
+3. Compares peer blob lists with local storage
+4. Pulls missing blobs via `/bytecave/blob/1.0.0`
+
+**Implementation:**
+```typescript
+p2pService.on('peer:connect', async (peerId: string) => {
+  setTimeout(async () => {
+    // Pull missing blobs from all peers
+    await replicationService.pullMissingBlobs();
+  }, 1000);
+});
+```
+
+#### Replication Timing
+
+| Event | Push Delay | Pull Delay | Total Sync Time |
+|-------|-----------|-----------|-----------------|
+| **Peer Connection** | 1s | 1s | ~2-6s |
+| **Node Startup** | 5s | 5s | ~5-10s |
+| **Periodic Health Check** | - | - | Every 10 minutes |
+| **Peer List Refresh** | - | 60s | Every 60 seconds |
+
+**Result:** New nodes receive replications within **~6 seconds** of connecting, combining both push and pull mechanisms for fast, reliable synchronization.
+
+#### Replication Factor
+
+The target number of replicas is fetched from the on-chain VaultNodeRegistry contract:
+
+```typescript
+const replicationFactor = await vaultRegistry.getReplicationFactor();
+// Default: 3 replicas per blob
+```
+
+Nodes continuously monitor replication health and re-replicate blobs that fall below the target factor.
+
 ### Sharding
 
 Blobs are distributed across nodes using deterministic shard assignment:
@@ -593,10 +664,18 @@ timeout = 30 seconds + (fileSize in MB × 10 seconds)
 // Example: 5MB file = 30s + 50s = 80 second timeout
 ```
 
-**Chunked Sending:**
-- Messages over 64KB are automatically sent in 64KB chunks
-- Prevents stream buffer overflow on large files
-- Includes flow control and drain events
+**Chunked Message Transmission:**
+- All messages sent in 16KB chunks to prevent stream buffer overflow
+- Both sender and receiver support chunked transmission
+- Sender: `writeMessage()` splits data into 16KB chunks
+- Receiver: `readMessage()` reassembles chunks using length-prefixed framing
+- Handles messages of any size reliably (tested up to 5MB)
+
+**Protocol Handler Architecture:**
+- All P2P protocol handlers are async and properly awaited
+- Errors are caught and handled gracefully
+- Prevents silent failures in replication and storage operations
+- Ensures reliable message transmission across the network
 
 **Validation:**
 - File size checked before base64 encoding

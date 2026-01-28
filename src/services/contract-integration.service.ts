@@ -9,7 +9,7 @@
 
 import { ethers } from 'ethers';
 import { logger } from '../utils/logger.js';
-import { cidToBytes32, appIdsToBytes32 } from '../utils/content-registry.js';
+import { appIdsToBytes32 } from '../utils/content-registry.js';
 
 // ABI fragments for the contracts we need
 const NODE_REGISTRY_ABI = [
@@ -692,8 +692,9 @@ export class ContractIntegrationService {
     }
 
     try {
-      const cidHash = cidToBytes32(cid);
-      const isRegistered = await this.contentRegistry.isContentRegistered(cidHash);
+      // CID is already a SHA-256 hash (bytes32), just add 0x prefix
+      const cidBytes32 = '0x' + cid;
+      const isRegistered = await this.contentRegistry.isContentRegistered(cidBytes32);
       return isRegistered;
     } catch (error: any) {
       logger.error('[CONTRACT] Failed to verify CID registration', { cid, error: error.message });
@@ -704,18 +705,20 @@ export class ContractIntegrationService {
   /**
    * Get content record from ContentRegistry
    */
-  async getContentRecord(cid: string): Promise<{ owner: string; appId: string; timestamp: bigint } | null> {
+  async getContentRecord(cid: string): Promise<{ owner: string; appId: string; timestamp: number } | null> {
     if (!this.contentRegistry) {
+      logger.warn('[CONTRACT] ContentRegistry not configured');
       return null;
     }
 
     try {
-      const cidHash = cidToBytes32(cid);
-      const record = await this.contentRegistry.getContentRecord(cidHash);
+      // CID is already a SHA-256 hash (bytes32), just add 0x prefix
+      const cidBytes32 = '0x' + cid;
+      const record = await this.contentRegistry.getContentRecord(cidBytes32);
       return {
         owner: record.owner,
         appId: record.appId,
-        timestamp: record.timestamp
+        timestamp: Number(record.timestamp)
       };
     } catch (error: any) {
       logger.error('[CONTRACT] Failed to get content record', { cid, error: error.message });
