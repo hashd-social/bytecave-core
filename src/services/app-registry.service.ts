@@ -10,15 +10,7 @@
 
 import { ethers } from 'ethers';
 import { logger } from '../utils/logger.js';
-
-const APP_REGISTRY_ABI = [
-  'function isAuthorized(bytes32 appId, address sender) external view returns (bool)',
-  'function getApp(bytes32 appId) external view returns (string appName, address owner, bool active, uint256 registeredAt, uint256 burnedAmount)',
-  'function computeAppId(string appName) external pure returns (bytes32)',
-  'function getBurnAmount() external view returns (uint256)',
-  'function getTotalBurned() external view returns (uint256)',
-  'function getHashdToken() external view returns (address)'
-];
+import { APP_REGISTRY_ABI } from '../abis/index.js';
 
 class AppRegistryService {
   private provider: ethers.JsonRpcProvider | null = null;

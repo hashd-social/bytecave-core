@@ -26,18 +26,7 @@ App ID: {appId}
 Timestamp: {timestamp}
 Nonce: {nonce}`;
 
-// Contract ABIs for on-chain verification
-const MESSAGE_STORAGE_ABI = [
-  'function getMessageByCID(string cid) view returns (tuple(bool exists, address sender, uint256 timestamp))'
-];
-
-const POST_STORAGE_ABI = [
-  'function getPostByCID(string cid) view returns (tuple(bool exists, address author, uint256 timestamp))'
-];
-
-const CONTENT_REGISTRY_ABI = [
-  'function isContentRegistered(bytes32 cid) external view returns (bool)'
-];
+import { MESSAGE_STORAGE_ABI, POST_STORAGE_ABI, CONTENT_REGISTRY_ABI } from '../abis/index.js';
 
 export class StorageAuthorizationService {
   private provider: ethers.Provider | null = null;

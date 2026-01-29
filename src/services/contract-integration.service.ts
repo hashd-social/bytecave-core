@@ -10,50 +10,9 @@
 import { ethers } from 'ethers';
 import { logger } from '../utils/logger.js';
 import { appIdsToBytes32 } from '../utils/content-registry.js';
+import { NODE_REGISTRY_ABI, INCENTIVES_ABI, CONTENT_REGISTRY_ABI } from '../abis/index.js';
 
 // ABI fragments for the contracts we need
-const NODE_REGISTRY_ABI = [
-  'function getNode(bytes32 nodeId) view returns (tuple(address owner, bytes publicKey, string peerId, bytes32 metadataHash, uint256 registeredAt, bool active))',
-  'function getActiveNodes() view returns (bytes32[])',
-  'function getAllNodes(uint256 offset, uint256 limit) view returns (bytes32[])',
-  'function getNodeCount() view returns (uint256 total, uint256 active)',
-  'function getNodeByOwner(address owner) view returns (bytes32)',
-  'function getNodeStake(bytes32 nodeId) view returns (uint256)',
-  'function isNodeActive(bytes32 nodeId) view returns (bool)',
-  'function registerNode(bytes publicKey, string peerId, bytes32 metadataHash) returns (bytes32)',
-  'function updateNode(string peerId, bytes32 metadataHash)',
-  'function unregisterNode()',
-  'function deregisterNode(bytes32 nodeId)',
-  'function minVersion() view returns (string)',
-  'function setMinVersion(string version)',
-  'function replicationFactor() view returns (uint256)',
-  'function setReplicationFactor(uint256 factor)',
-  'event NodeRegistered(bytes32 indexed nodeId, address indexed owner)',
-  'event NodeUpdated(bytes32 indexed nodeId, string peerId, bytes32 metadataHash)',
-  'event NodeDeactivated(bytes32 indexed nodeId)',
-  'event MinVersionUpdated(string version)',
-  'event ReplicationFactorUpdated(uint256 newFactor)'
-];
-
-const INCENTIVES_ABI = [
-  'function getReputation(bytes32 nodeId) view returns (tuple(uint256 totalProofs, uint256 validProofs, uint256 invalidProofs, uint256 missedProofs, uint256 lastActiveBlock, uint256 reliabilityScore, bool blacklisted))',
-  'function canSubmitProof(bytes32 nodeId) view returns (bool)',
-  'function getClaimableRewards(bytes32 nodeId) view returns (uint256)',
-  'function submitProof(bytes32 nodeId, bytes32 cid, uint256 timestamp, bytes32 challenge, bytes signature)',
-  'function claimRewards(bytes32 nodeId)',
-  'function incentivesEnabled() view returns (bool)',
-  'event ProofSubmitted(bytes32 indexed nodeId, bytes32 indexed cid, bool valid)',
-  'event RewardsClaimed(bytes32 indexed nodeId, uint256 amount)'
-];
-
-const CONTENT_REGISTRY_ABI = [
-  'function isContentRegistered(bytes32 cid) view returns (bool)',
-  'function getContentOwner(bytes32 cid) view returns (address)',
-  'function getContentAppId(bytes32 cid) view returns (bytes32)',
-  'function getContentRecord(bytes32 cid) view returns (tuple(address owner, bytes32 appId, uint256 timestamp))',
-  'event ContentRegistered(bytes32 indexed cid, address indexed owner, bytes32 indexed appId, uint256 timestamp)',
-  'event ContentDeleted(bytes32 indexed cid, address indexed owner)'
-];
 
 export interface NodeInfo {
   nodeId: string;
@@ -474,13 +433,15 @@ export class ContractIntegrationService {
   async registerNode(
     publicKey: string,
     peerId: string,
-    metadataHash: string
+    metadataHash: string,
+    stakeAmount: bigint,
+    signature: string
   ): Promise<string | null> {
     if (!this.nodeRegistry) throw new Error('Registry not initialized');
     if (!this.signer) throw new Error('Signer required for registration');
 
     try {
-      const tx = await this.nodeRegistry.registerNode(publicKey, peerId, metadataHash);
+      const tx = await this.nodeRegistry.registerNode(publicKey, peerId, metadataHash, stakeAmount, signature);
       const receipt = await tx.wait();
 
       // Extract nodeId from event
@@ -715,6 +676,12 @@ export class ContractIntegrationService {
       // CID is already a SHA-256 hash (bytes32), just add 0x prefix
       const cidBytes32 = '0x' + cid;
       const record = await this.contentRegistry.getContentRecord(cidBytes32);
+      
+      // Check if owner is zero address (content doesn't exist)
+      if (record.owner === '0x0000000000000000000000000000000000000000') {
+        return null;
+      }
+      
       return {
         owner: record.owner,
         appId: record.appId,

@@ -7,6 +7,7 @@ import { ethers } from 'ethers';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { contractIntegrationService } from './contract-integration.service.js';
+import { HASHD_TOKEN_ABI } from '../abis/index.js';
 
 export class AutoRegisterService {
   private static instance: AutoRegisterService;
@@ -88,12 +89,7 @@ export class AutoRegisterService {
       const wallet = new ethers.Wallet(config.privateKey, provider);
 
       // Get HASHD token contract
-      const hashdAbi = [
-        'function approve(address spender, uint256 amount) returns (bool)',
-        'function allowance(address owner, address spender) view returns (uint256)',
-        'function balanceOf(address owner) view returns (uint256)'
-      ];
-      const hashd = new ethers.Contract(config.hashdTokenAddress, hashdAbi, wallet);
+      const hashd = new ethers.Contract(config.hashdTokenAddress, HASHD_TOKEN_ABI, wallet);
 
       // Check balance
       const balance = await hashd.balanceOf(wallet.address);
@@ -154,6 +150,11 @@ export class AutoRegisterService {
       };
       const metadataHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(metadata)));
 
+      // Generate signature with wallet (node operator's Ethereum account)
+      // Contract validates that signature comes from the wallet calling registerNode
+      const messageHash = ethers.keccak256(ethers.solidityPacked(['address'], [wallet.address]));
+      const signature = await wallet.signMessage(ethers.getBytes(messageHash));
+
       logger.info('Submitting registration transaction...', {
         peerId: peerId.slice(0, 16) + '...',
         publicKey: publicKeyHex.slice(0, 16) + '...',
@@ -164,7 +165,9 @@ export class AutoRegisterService {
       const nodeId = await contractIntegrationService.registerNode(
         publicKeyHex,
         peerId,
-        metadataHash
+        metadataHash,
+        stakeAmount,
+        signature
       );
 
       if (nodeId) {
