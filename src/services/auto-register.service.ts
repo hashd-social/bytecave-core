@@ -7,6 +7,7 @@ import { ethers } from 'ethers';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { contractIntegrationService } from './contract-integration.service.js';
+import { storageWebSocketService } from './storage-websocket.service.js';
 import { HASHD_TOKEN_ABI } from '../abis/index.js';
 
 export class AutoRegisterService {
@@ -173,6 +174,10 @@ export class AutoRegisterService {
       if (nodeId) {
         logger.info(`✅ Node registered successfully! (nodeId: ${nodeId.slice(0, 16)}...)`);
         logger.info(`   Staked: 1000 HASHD tokens`);
+        
+        // Update relay with new registration status
+        storageWebSocketService.updateRegistrationStatus(true);
+        logger.info('📡 Updated relay with registration status');
         
         // Announce immediately so network knows about registration
         if (p2pService) {

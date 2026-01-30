@@ -354,6 +354,18 @@ async start(): Promise<void> {
         // Non-fatal - P2P protocols still work
       }
 
+      // Listen for registration events for THIS node (for external registration via desktop app)
+      if (contractIntegrationService.isInitialized()) {
+        logger.info('[P2P] Setting up blockchain event listener for this node');
+        contractIntegrationService.onNodeRegistered(async (nodeId: string) => {
+          const myNodeId = await contractIntegrationService.getNodeByPeerId(peerId);
+          if (myNodeId === nodeId) {
+            logger.info('[P2P] This node registered on-chain externally, updating relay');
+            storageWebSocketService.updateRegistrationStatus(true);
+          }
+        });
+      }
+
       // Handle auto-registration after P2P is started and we have a peer ID
       // Extract the raw secp256k1 public key for registration
       logger.info('[P2P] Attempting to extract secp256k1 public key from peer ID');

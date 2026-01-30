@@ -32,7 +32,7 @@ interface ReplicateRequest {
   appId?: string;
   sender?: string;
   timestamp?: number;
-  hashIdToken?: number;
+  hashIdToken?: string;
   authorization?: any; // For browser-to-node storage with signed authorization
 }
 
@@ -230,18 +230,19 @@ class P2PProtocolsService {
         return;
       }
 
-      // SECURITY CHECK 3: Validate file size (5MB limit)
-      const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB in bytes
+      // SECURITY CHECK 3: Validate file size (respects MAX_BLOB_SIZE config)
+      const maxFileSizeBytes = config.maxBlobSizeMB * 1024 * 1024;
       const ciphertextSize = Buffer.from(request.ciphertext, 'base64').length;
-      if (ciphertextSize > MAX_FILE_SIZE) {
+      if (ciphertextSize > maxFileSizeBytes) {
         const sizeMB = (ciphertextSize / (1024 * 1024)).toFixed(2);
-        logger.warn(`Replication rejected: File size (${sizeMB}MB) exceeds maximum allowed size of 5MB`, { 
+        const maxSizeMB = config.maxBlobSizeMB;
+        logger.warn(`Replication rejected: File size (${sizeMB}MB) exceeds maximum allowed size of ${maxSizeMB}MB`, { 
           cid: request.cid, 
           from: remotePeer 
         });
         this.writeMessage(stream, { 
           success: false, 
-          error: `File size (${sizeMB}MB) exceeds maximum allowed size of 5MB` 
+          error: `File size (${sizeMB}MB) exceeds maximum allowed size of ${maxSizeMB}MB` 
         });
         await stream.close();
         return;

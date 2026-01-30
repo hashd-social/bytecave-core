@@ -131,7 +131,7 @@ export class StorageService {
       appId?: string;
       sender?: string;
       timestamp?: number;
-      hashIdToken?: number;
+      hashIdToken?: string;
       metadata?: Record<string, any>;
       replicationSource?: 'local' | 'replicated';
     }

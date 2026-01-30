@@ -29,7 +29,7 @@ interface StorageRequestMessage {
   requestId: string;
   data: string; // base64 encoded blob
   contentType: string;
-  hashIdToken?: number;
+  hashIdToken?: string;
   authorization?: {
     signature: string;
     address: string;
@@ -152,6 +152,23 @@ export class StorageWebSocketService {
 
     this.ws.send(JSON.stringify(message));
     logger.info('[Storage WS] Sent registration', { peerId: this.peerId.slice(0, 12), nodeId: config.nodeId });
+  }
+
+  /**
+   * Update registration status with relay
+   * Called after on-chain registration completes
+   */
+  updateRegistrationStatus(isRegistered: boolean): void {
+    this.isRegistered = isRegistered;
+    
+    // Re-register with relay if connected
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.peerId) {
+      this.register();
+      logger.info('[Storage WS] Updated registration status with relay', { 
+        peerId: this.peerId.slice(0, 12), 
+        isRegistered 
+      });
+    }
   }
 
   private handleMessage(message: Message): void {

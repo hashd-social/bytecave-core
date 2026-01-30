@@ -67,6 +67,14 @@ export function validateReplicateRequest(body: any): void {
   } catch (error) {
     throw new InvalidRequestError('fromPeer must be a valid URL');
   }
+
+  // Check size limit - replicated blobs must also respect MAX_BLOB_SIZE
+  const sizeBytes = Buffer.from(body.ciphertext, 'base64').length;
+  const maxSizeBytes = config.maxBlobSizeMB * 1024 * 1024;
+
+  if (sizeBytes > maxSizeBytes) {
+    throw new PayloadTooLargeError(sizeBytes, maxSizeBytes);
+  }
 }
 
 /**

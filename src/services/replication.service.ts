@@ -659,7 +659,7 @@ export class ReplicationService {
       .filter(({ result }) => result.status === 'fulfilled' && result.value)
       .map(({ peer }) => peer.url);
 
-    // Add failed replications to retry queue
+    // Handle failed replications - try alternative peers if available
     const failed = results
       .map((result, index) => ({
         result,
@@ -667,10 +667,74 @@ export class ReplicationService {
       }))
       .filter(({ result }) => result.status === 'rejected' || (result.status === 'fulfilled' && !result.value));
 
-    for (const { peer } of failed) {
-      const p2pPeerId = (peer as any).peerId;
-      if (p2pPeerId) {
-        this.addToRetryQueue(cid, ciphertext, mimeType, p2pPeerId, options);
+    // Calculate how many more replicas we need after initial attempts
+    const currentSuccessful = successful.length + 1; // +1 for this node
+    const stillNeeded = replicationFactor - currentSuccessful;
+
+    if (stillNeeded > 0 && failed.length > 0) {
+      logger.info('[REPLICATION] Some replications failed, trying alternative peers', {
+        cid,
+        stillNeeded,
+        failedCount: failed.length
+      });
+
+      // Get list of peers we haven't tried yet (excluding already attempted and successful ones)
+      const attemptedPeerIds = new Set(enabledPeers.map(p => (p as any).peerId));
+      const alternativePeers = this.peers
+        .filter(p => p.enabled)
+        .filter(p => (p as any).peerId !== myPeerId)
+        .filter(p => connectedPeerIds.includes((p as any).peerId))
+        .filter(p => !peersWithCid.includes((p as any).peerId))
+        .filter(p => !attemptedPeerIds.has((p as any).peerId))
+        .slice(0, stillNeeded);
+
+      if (alternativePeers.length > 0) {
+        logger.info('[REPLICATION] Attempting replication to alternative peers', {
+          cid,
+          alternativeCount: alternativePeers.length,
+          peers: alternativePeers.map(p => ({ nodeId: p.nodeId, peerId: (p as any).peerId?.slice(0, 12) }))
+        });
+
+        const alternativeResults = await Promise.allSettled(
+          alternativePeers.map(peer => this.replicateToPeer(peer, cid, ciphertext, mimeType, options))
+        );
+
+        const alternativeSuccessful = alternativeResults
+          .map((result, index) => ({
+            result,
+            peer: alternativePeers[index]
+          }))
+          .filter(({ result }) => result.status === 'fulfilled' && result.value)
+          .map(({ peer }) => peer.url);
+
+        successful.push(...alternativeSuccessful);
+
+        logger.info('[REPLICATION] Alternative peer replication results', {
+          cid,
+          alternativeSuccessful: alternativeSuccessful.length,
+          totalSuccessful: successful.length
+        });
+      } else {
+        logger.warn('[REPLICATION] No alternative peers available for fallback', {
+          cid,
+          stillNeeded
+        });
+
+        // Only add to retry queue if no alternatives were available
+        for (const { peer } of failed) {
+          const p2pPeerId = (peer as any).peerId;
+          if (p2pPeerId) {
+            this.addToRetryQueue(cid, ciphertext, mimeType, p2pPeerId, options);
+          }
+        }
+      }
+    } else if (failed.length > 0) {
+      // Replication factor met, but some peers failed - add to retry queue for eventual consistency
+      for (const { peer } of failed) {
+        const p2pPeerId = (peer as any).peerId;
+        if (p2pPeerId) {
+          this.addToRetryQueue(cid, ciphertext, mimeType, p2pPeerId, options);
+        }
       }
     }
 
