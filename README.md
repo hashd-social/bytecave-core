@@ -1,13 +1,18 @@
 # ByteCave Core
 
-Decentralized storage node for the ByteCave network. Provides encrypted blob storage with P2P replication, content-addressed sharding, and cryptographic proof generation.
+ByteCave Core is the reference node implementation for the ByteCave peer-to-peer storage network.
+It handles encrypted blob storage, replication, and content availability using libp2p networking, without needing a central gateway or trusted coordinator.
+
+A ByteCave Core node stores only encrypted, content-addressed data. It does not generate encryption keys, does not know what it is storing, and cannot read or interpret the data it holds. Nodes participate in peer discovery, replication, and retrieval based on deterministic addressing and policy rules, not application-level semantics.
+
+ByteCave Core is designed to be application-agnostic. HASHD uses it for message payloads, attachments, and key material, but other applications can use the same network for any encrypted data. Nodes can be run by anyone, and no single node is required for correctness, access control, or trust.
 
 ## Features
 
 - **P2P Storage** - Distributed blob storage with libp2p
-- **WebRTC Support** - Direct browser-to-node P2P connections via WebRTC
+- **WebRTC Support** - Browser-to-node P2P connections via relay-assisted WebRTC
 - **Sharding** - Deterministic shard assignment via CID modulo for horizontal scaling
-- **Encryption** - AES-256-GCM encryption for all stored data
+- **Client-Side Encryption** - Stores encrypted blobs (encryption handled by client applications)
 - **Proof Generation** - Cryptographic proofs for storage verification
 - **Replication** - Automatic data replication across network
 - **NAT Traversal** - Circuit relay support for NAT'd nodes
@@ -31,16 +36,18 @@ ByteCave nodes use **two different cryptographic key pairs** for different purpo
 
 - **Algorithm:** secp256k1 (same as Ethereum)
 - **Public Key Format:** 64 bytes uncompressed (without 0x04 prefix) for contract registration
-- **Private Key Derivation:** Deterministically derived from `OWNER_ADDRESS`:
+- **Public Key Derivation:** Deterministically derived from `OWNER_ADDRESS`:
   ```
   seed = SHA256("bytecave-p2p-identity" + ownerAddress.toLowerCase())
-  privateKey = secp256k1.privateKeyFromSeed(seed)
+  publicKey = secp256k1.derivePublicKey(seed)
+  peerId = libp2p.createPeerId(publicKey)
   ```
+- **Private Key:** Requires your wallet's `PRIVATE_KEY` environment variable to sign registration transactions
 - **Used For:**
-  - Registering nodes in VaultNodeRegistry contract
+  - Registering nodes in VaultNodeRegistry contract (requires wallet PRIVATE_KEY to sign)
   - On-chain signature verification via `ecrecover`
   - Proving node ownership cryptographically
-  - Deriving libp2p peer ID
+  - Deriving deterministic libp2p peer ID from owner address
 
 **Where to find it:**
 - Health endpoint: `/health` → `secp256k1PublicKey` field (64 bytes uncompressed)
@@ -48,10 +55,11 @@ ByteCave nodes use **two different cryptographic key pairs** for different purpo
 - Desktop app: Status tab → "secp256k1 Public Key"
 
 **Security Properties:**
-- **Deterministic:** Same owner address always produces the same key pair and peer ID
-- **Provable Ownership:** Only the owner can generate valid signatures with the derived private key
-- **Non-Transferable:** Cannot register someone else's node without their private key
-- **Unique:** Each owner address produces a unique secp256k1 key pair
+- **Deterministic Peer ID:** Same owner address always produces the same peer ID (public key derivation)
+- **Provable Ownership:** Registration requires signing with wallet's PRIVATE_KEY - only the wallet owner can sign
+- **Non-Transferable:** Cannot register someone else's node without their wallet private key
+- **Unique:** Each owner address produces a unique secp256k1 public key and peer ID
+- **Secure:** Even though peer ID derivation is deterministic, registration signatures require the actual wallet private key
 
 ### Ed25519 Key Pair (Storage Proofs)
 
@@ -76,12 +84,15 @@ ByteCave nodes use **two different cryptographic key pairs** for different purpo
 
 ### Key Summary
 
-| Key Type | Size | Purpose | Where to Use |
-|----------|------|---------|-------------|
-| **secp256k1** | 64 bytes uncompressed | Contract registration | Dashboard/Desktop registration |
-| **Ed25519** | 32 bytes | Storage proofs | Auto-managed by node |
+| Key Type | Size | Purpose | How Generated | Where Used |
+|----------|------|---------|---------------|------------|
+| **secp256k1** | 64 bytes uncompressed | Contract registration & P2P identity | Derived from OWNER_ADDRESS (public key only) | Dashboard/Desktop registration |
+| **Ed25519** | 32 bytes | Storage proofs | Auto-generated in `node-key.json` | Auto-managed by node |
 
-**Important:** When registering your node on-chain, always use the **secp256k1 public key** (64 bytes uncompressed), not the Ed25519 key.
+**Important:** 
+- **secp256k1 public key** is derived from your OWNER_ADDRESS and used for registration
+- **Signing registration** requires your wallet's PRIVATE_KEY (not derived - you must provide it)
+- **Ed25519 key** is completely separate, auto-generated for storage proofs
 
 ## Node Registration Process
 
@@ -424,10 +435,10 @@ Node → Connects to Relay
 ### Protocols
 
 **Transports:**
-- **TCP** - Node-to-node direct connections (only when both nodes have public IPs)
-- **WebSockets** - Node-to-relay connections (primary transport for NAT'd nodes)
-- **WebRTC** - Browser-to-node P2P connections
+- **WebSockets** - Primary transport for node-to-relay connections (most common in production)
 - **Circuit Relay v2** - NAT traversal for all peers (browsers and NAT'd nodes)
+- **WebRTC** - Browser-to-node connections via relay-assisted signaling
+- **TCP** - Direct node-to-node connections (rarely used - requires both nodes to have public IPs)
 
 **Discovery:**
 - **Kad-DHT** - Peer discovery and routing
@@ -684,30 +695,32 @@ timeout = 30 seconds + (fileSize in MB × 10 seconds)
 
 ## Security
 
-- All data encrypted with AES-256-GCM
+- Stores encrypted, content-addressed blobs (encryption performed client-side by applications)
 - Private keys stored securely in data directory with 0o600 permissions (owner read/write only)
 - P2P connections use Noise protocol encryption
 - Proof generation uses Ed25519 signatures
-- No data stored in plaintext
+- Node cannot decrypt stored data (no encryption keys held)
 - **File size limits enforced at multiple layers** to prevent malicious nodes from bypassing restrictions
 
 ### Key Management
 
-The node uses **two separate Ed25519 key pairs** for different purposes:
+The node uses **two different key pairs** for different purposes:
 
-1. **Node Signing Key** (`node-key.json`) - **CRITICAL**
-   - Used for storage proofs and on-chain registration
+1. **Ed25519 Signing Key** (`node-key.json`) - **CRITICAL**
+   - Used for storage proof signatures
+   - Auto-generated on first startup
    - Derives the on-chain `nodeId = keccak256(publicKey)`
    - **Loss = loss of node identity and staked tokens**
    - **Compromise = attacker can forge proofs and steal stake**
    - ⚠️ **MUST be backed up securely**
 
-2. **P2P Identity Key** (`p2p-identity.json`) - **Important**
-   - Used only for libp2p peer authentication
+2. **secp256k1 P2P Identity** (derived from OWNER_ADDRESS) - **Important**
+   - Public key derived deterministically from owner address
+   - Used for libp2p peer ID and on-chain registration
    - Determines the `peerId` for P2P network
-   - **Loss = new peerId on restart (peers need to rediscover)**
-   - **Compromise = attacker can impersonate node in P2P network**
-   - Should be backed up for consistency
+   - **Registration requires wallet PRIVATE_KEY** to sign transactions
+   - Peer ID is deterministic and consistent per owner address
+   - Falls back to file-based Ed25519 key (`p2p-identity.json`) if no OWNER_ADDRESS is set
 
 **Security Best Practices:**
 - Keep `data/` directory permissions restricted (700)
